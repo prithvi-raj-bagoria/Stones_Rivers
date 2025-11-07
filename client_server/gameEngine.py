@@ -54,10 +54,20 @@ def empty_board(rows:int, cols:int) -> List[List[Optional[Piece]]]:
 
 def default_start_board(rows:int, cols:int) -> List[List[Optional[Piece]]]:
     board = empty_board(rows, cols)
-    width = min(6, max(2, cols - 6))
-    start_cols = list(range((cols - width)//2, (cols - width)//2 + width))
-    top_rows = [3,4]   # buffer at 0
-    bot_rows = [rows-5, rows-4]  # buffer at rows-1
+    
+    # Determine piece placement based on board size
+    # Total pieces per player = cols (12, 14, or 16)
+    # Distribute across 2 rows, centered on the board
+    pieces_per_player = cols
+    pieces_per_row = pieces_per_player // 2
+    
+    # Center the pieces horizontally
+    start_col = (cols - pieces_per_row) // 2
+    start_cols = list(range(start_col, start_col + pieces_per_row))
+    
+    top_rows = [3, 4]   # Square pieces (buffer of 3 from top)
+    bot_rows = [rows-5, rows-4]  # Circle pieces (buffer of 4 from bottom)
+    
     for r in top_rows:
         for c in start_cols:
             board[r][c] = Piece("square","stone")
@@ -81,9 +91,27 @@ def save_board_to_file(board, path:str):
 
 # ---------------- Score helpers ----------------
 def score_cols_for(cols:int) -> List[int]:
-    w=4
+    # Scale scoring area width with board size
+    # For 12 cols: 4 scoring cols (1/3)
+    # For 14 cols: 5 scoring cols  
+    # For 16 cols: 6 scoring cols
+    if cols <= 12:
+        w = 4
+    elif cols <= 14:
+        w = 5
+    else:
+        w = 6
     start = max(0, (cols - w)//2)
     return list(range(start, start+w))
+
+def get_win_count(cols:int) -> int:
+    """Get the number of stones needed to win based on board size."""
+    if cols <= 12:
+        return 4
+    elif cols <= 14:
+        return 5
+    else:
+        return 6
 
 def top_score_row() -> int:
     return 2
@@ -466,6 +494,7 @@ def generate_all_moves(board:List[List[Optional[Piece]]],
 # ---------------- Win check ----------------
 def check_win(board:List[List[Optional[Piece]]], rows:int, cols:int, score_cols:List[int]) -> Optional[str]:
     top = top_score_row(); bot = bottom_score_row(rows)
+    win_count = get_win_count(cols)  # Dynamic win count based on board size
     ccount=0; scount=0
     for x in score_cols:
         if in_bounds(x, top, rows, cols):
@@ -474,8 +503,8 @@ def check_win(board:List[List[Optional[Piece]]], rows:int, cols:int, score_cols:
         if in_bounds(x, bot, rows, cols):
             q = board[bot][x]
             if q and q.owner=="square" and q.side=="stone": scount+=1
-    if ccount >= WIN_COUNT: return "circle"
-    if scount >= WIN_COUNT: return "square"
+    if ccount >= win_count: return "circle"
+    if scount >= win_count: return "square"
     return None
 
 # ---------------- ASCII for CLI ----------------
@@ -737,13 +766,18 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
 
     clock = pygame.time.Clock()
     players = {"circle":"human","square":"human"}
-    # if mode == "hvai": players["square"]="ai"
-    # elif mode == "aivai": players = {"circle":"ai","square":"ai"}
-    if mode=="aivai": players={"circle":"ai","square":"ai"}
-    elif mode=="hvh": players={"circle":"human","square":"human"}
-    else:
-        if circle_strategy=="random": players={"circle":"ai","square":"human"}
-        else: players={"circle":"human","square":"ai"}
+    # Assign players based on mode
+    if mode=="aivai": 
+        players={"circle":"ai","square":"ai"}
+    elif mode=="hvh": 
+        players={"circle":"human","square":"human"}
+    else:  # hvai mode
+        # If circle strategy is NOT random, circle is AI (human plays square)
+        # If square strategy is NOT random, square is AI (human plays circle)
+        if circle_strategy != "random":
+            players={"circle":"ai","square":"human"}
+        else:
+            players={"circle":"human","square":"ai"}
     
     # instantiate agents (they only receive board)
     agent_circle = get_agent("circle", circle_strategy)
@@ -1018,11 +1052,17 @@ def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
     agent_circle = get_agent("circle", circle_strategy)
     agent_square = get_agent("square", square_strategy)
     players = {"circle":"human","square":"human"}
-    if mode=="aivai": players={"circle":"ai","square":"ai"}
-    elif mode=="hvh": players={"circle":"human","square":"human"}
-    else:
-        if circle_strategy=="random": players={"circle":"ai","square":"human"}
-        else: players={"circle":"human","square":"ai"}
+    if mode=="aivai": 
+        players={"circle":"ai","square":"ai"}
+    elif mode=="hvh": 
+        players={"circle":"human","square":"human"}
+    else:  # hvai mode
+        # If circle strategy is NOT random, circle is AI (human plays square)
+        # If square strategy is NOT random, square is AI (human plays circle)
+        if circle_strategy != "random":
+            players={"circle":"ai","square":"human"}
+        else:
+            players={"circle":"human","square":"ai"}
     
     current="circle"; winner=None; turn=0
 
@@ -1160,14 +1200,24 @@ def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["hvh","hvai","aivai"], default="hvai")
-    ap.add_argument("--circle", choices=["random","student","student_cpp"], default="random")
-    ap.add_argument("--square", choices=["random","student","student_cpp"], default="random")
+    ap.add_argument("--circle", choices=["random","student","student_cpp",'friend'], default="random")
+    ap.add_argument("--square", choices=["random","student","student_cpp",'friend'], default="random")
     ap.add_argument("--load", default=None)
     ap.add_argument("--nogui", action="store_true")
     ap.add_argument("--time", type=float, default=1.0, help="Time per player in minutes (default: 1.0)")
+    ap.add_argument("--board-size", choices=["small", "medium", "large"], default="small", 
+                    help="Board size: small (13x12, 12 pieces), medium (15x14, 14 pieces), large (17x16, 16 pieces)")
     args = ap.parse_args()
 
-    rows = DEFAULT_ROWS; cols = DEFAULT_COLS
+    # Determine board dimensions based on size
+    if args.board_size == "small":
+        rows, cols = 13, 12  # Current default: 13 rows x 12 cols
+    elif args.board_size == "medium":
+        rows, cols = 15, 14  # Medium: 15 rows x 14 cols
+    elif args.board_size == "large":
+        rows, cols = 17, 16  # Large: 17 rows x 16 cols
+    else:
+        rows = DEFAULT_ROWS; cols = DEFAULT_COLS
     time_per_player = args.time * 60  # Convert minutes to seconds
 
     if args.nogui:

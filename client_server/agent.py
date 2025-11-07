@@ -1,4 +1,3 @@
-
 """
 River and Stones Game - AI Agent Framework
 
@@ -17,6 +16,11 @@ import random
 import copy
 from typing import List, Dict, Any, Optional, Tuple
 from abc import ABC, abstractmethod
+try:
+    from friend import StudentAgent as FriendAgent
+except ImportError:
+    print("Warning: friend.py not found")
+    FriendAgent = None
 
 # ==================== GAME UTILITIES ====================
 # These functions help agents understand and manipulate the game state
@@ -587,6 +591,12 @@ def get_agent(player: str, strategy: str) -> BaseAgent:
         return RandomAgent(player)
     elif strategy == "student":
         return StudentAgent(player)
+    elif strategy == "friend":
+        if FriendAgent:
+            return FriendAgent(player)
+        else:
+            raise ValueError("friend.py not found")
+
     elif strategy == "student_cpp":
         try:
             import student_agent_cpp as student_agent
