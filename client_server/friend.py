@@ -1446,7 +1446,23 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                             elif (player == "circle" and ny < y) or (player == "square" and ny > y):
                                 advancing_moves.append(move)
                         
-                        # Push move
+                        # River Traversing using opponent's river or my river
+                        elif target.side == "river":
+                            # Traverse river network
+                            reachable_cells = traverse_river(board, nx, ny, x, y, player, rows, cols, score_cols)
+                            
+                            for dest_y, dest_x in reachable_cells:
+                                move = {"action": "move", "from": [x, y], "to": [dest_x, dest_y]}
+                                
+                                # Categorize river moves
+                                if dest_y == my_goal_row and dest_x in score_cols:
+                                    if my_stones_in_goal == 3:
+                                        winning_moves.append(move)
+                                    else:
+                                        scoring_moves.append(move)
+                                elif (player == "circle" and dest_y < y) or (player == "square" and dest_y > y):
+                                    advancing_moves.append(move)
+                        # Push moves
                         elif target.owner == opponent:
                             px, py = nx + dx, ny + dy
                             if (in_bounds(px, py, rows, cols) and 
@@ -1475,7 +1491,7 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                         adj_x, adj_y = x + dx, y + dy
                         if in_bounds(adj_x, adj_y, rows, cols):
                             adj_piece = board[adj_y][adj_x]
-                            if adj_piece and adj_piece.owner == player and adj_piece.side == "river":
+                            if adj_piece and adj_piece.side == "river":
                                 adjacent_to_river = True
                                 break
                     
@@ -2451,11 +2467,11 @@ class StudentAgent(BaseAgent):
         # Initialize search components
         # These will be created on first move when we know board size
         self.zobrist = None
-        self.transposition_table = TranspositionTable(max_size=50000)
+        self.transposition_table = TranspositionTable(max_size=100000)
         
         # Search configuration
         self.default_search_depth = 2  # Look ahead: our move + opponent response
-        self.time_buffer = 0.1  # Reserve 0.1 seconds for safety
+        self.time_buffer = 0.5  # Reserve 0.5 seconds for safety
         
         # Move history to prevent immediate repetition
         self.last_move = None
