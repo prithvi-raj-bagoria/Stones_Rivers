@@ -1482,6 +1482,9 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
             # === ANALYZE MY PIECES ===
             if piece.owner == player:
                 if piece.side == "stone":
+                    #skip if this is already in scoring area
+                    if y == my_goal_row and x in score_cols:
+                        continue
                     # Check for winning/scoring moves
                     for dx, dy in directions:
                         nx, ny = x + dx, y + dy
@@ -1580,31 +1583,79 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                                 best_details["move"]["in_scoring_col"] = best_details["in_scoring_col"]
                                 best_details["move"]["priority"] = best_details["priority"]
                                 advancing_moves.append(best_details["move"])
+                            
+                        # Pushing my stones
+                        elif target.side == "stone" and target.owner == player:
+                            # Self-pushing: Reposition own pieces strategically
+                            px, py = nx + dx, ny + dy  # Where pushed stone ends up
+                            if (in_bounds(px, py, rows, cols) and 
+                                board[py][px] is None and
+                                not is_opponent_score_cell(px, py, player, rows, cols, score_cols)):
+                                # Calculate positions and scoring status
+                                pusher_in_sa_before = (y == my_goal_row and x in score_cols)
+                                pusher_in_sa_after = (ny == my_goal_row and nx in score_cols)
+                                pushed_in_sa_before = (ny == my_goal_row and nx in score_cols)
+                                pushed_in_sa_after = (py == my_goal_row and px in score_cols)
+                                # Count NEW stones entering scoring area
 
-                            # Pushing my stone
-                            elif target.side == "stone" and target.owner == player:
-                                # Self-pushing: Reposition own pieces strategically
-                                px, py = nx + dx, ny + dy  # Where pushed stone ends up
+                                if not pushed_in_sa_after and pushed_in_sa_before:
+                                    continue  # No benefit if pushed stone doesn't enter scoring area
 
-                                if (in_bounds(px, py, rows, cols) and 
-                                    board[py][px] is None and
-                                    not is_opponent_score_cell(px, py, player, rows, cols, score_cols)) :
-
-                                    # If our pushed goes out of scoring area, skip
-                                    if ny == my_goal_row and nx in score_cols:
-                                        continue
-
-                                    # Calculate improvement for PUSHED stone
+                                new_stones_scored = 0
+                                if not pusher_in_sa_before and pusher_in_sa_after:
+                                    new_stones_scored += 1
+                                if not pushed_in_sa_before and pushed_in_sa_after:
+                                    new_stones_scored += 1
+                                # CASE 1: Scoring move (at least one NEW stone enters SA)
+                                if new_stones_scored > 0:
+                                    # Check if this would be a WINNING move
+                                    if my_stones_in_goal + new_stones_scored >= 4:
+                                        move = {
+                                            "action": "push",
+                                            "from": [x, y],
+                                            "to": [nx, ny],
+                                            "pushed_to": [px, py],
+                                            "move_type": "winning",
+                                            "new_stones_scored": new_stones_scored,
+                                            "priority": BASE_PRIORITIES["winning"]
+                                        }
+                                        winning_moves.append(move)
+                                    else:
+                                        move = {
+                                            "action": "push",
+                                            "from": [x, y],
+                                            "to": [nx, ny],
+                                            "pushed_to": [px, py],
+                                            "move_type": "scoring",
+                                            "new_stones_scored": new_stones_scored,
+                                            "priority": BASE_PRIORITIES["scoring"] * phase_mult["scoring"] 
+                                        }
+                                        scoring_moves.append(move)
+                                # CASE 2: Advancing move (both stones get closer to goal)
+                                else:
+                                    # Calculate distance improvements
                                     pushed_stone_current_dist = abs(ny - my_goal_row) + min(abs(nx - sc) for sc in score_cols)
                                     pushed_stone_new_dist = abs(py - my_goal_row) + min(abs(px - sc) for sc in score_cols)
                                     pushed_stone_improvement = pushed_stone_current_dist - pushed_stone_new_dist
-
-                                    # Calculate improvement for PUSHER stone
                                     pusher_current_dist = abs(y - my_goal_row) + min(abs(x - sc) for sc in score_cols)
                                     pusher_new_dist = abs(ny - my_goal_row) + min(abs(nx - sc) for sc in score_cols)
                                     pusher_improvement = pusher_current_dist - pusher_new_dist
-
-                                    
+                                    total_improvement = pushed_stone_improvement + pusher_improvement
+                                    # Only generate if net benefit (threshold = 1.0)
+                                    if total_improvement >= 1.0:
+                                        quality = float(total_improvement)
+                                        move = {
+                                            "action": "push",
+                                            "from": [x, y],
+                                            "to": [nx, ny],
+                                            "pushed_to": [px, py],
+                                            "move_type": "repositioning",
+                                            "total_improvement": total_improvement,
+                                            "pushed_stone_improvement": pushed_stone_improvement,
+                                            "pusher_improvement": pusher_improvement,
+                                            "priority": BASE_PRIORITIES["push"] * phase_mult["push"] * quality * 2 # Boost for dual improvement
+                                        }
+                                        push_moves.append(move)
 
                             # Push moves by stones/rivers are going to generate inside defensive moves
                             elif target.owner == opponent:
@@ -1707,6 +1758,17 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                         setup_moves.append(move)
                 
                 elif piece.side == "river":
+                    #if the position is at scoring area flip back to stone
+                    if y == my_goal_row and x in score_cols:
+                        move = {
+                            "action": "flip",
+                            "from": [x, y],
+                            "strategic_value": "scoring",
+                            "move_type": "flip",
+                            "priority": BASE_PRIORITIES["scoring"] * phase_mult["scoring"]  * 2.0
+                        }
+                        setup_moves.append(move)
+                        continue
                     # SMART ROTATE: Only rotate if it could improve connectivity or blocking
                     current_ori = piece.orientation if hasattr(piece, 'orientation') else "horizontal"
                     
