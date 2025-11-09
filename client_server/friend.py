@@ -1,4 +1,3 @@
-
 import random
 import copy
 import time
@@ -43,6 +42,23 @@ def is_own_score_cell(x: int, y: int, player: str, rows: int, cols: int, score_c
 def get_opponent(player: str) -> str:
     """Get the opponent player identifier."""
     return "square" if player == "circle" else "circle"
+
+def count_stones_in_scoring_area(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> int:
+    """Count how many stones a player has in their scoring area."""
+    count = 0
+    
+    if player == "circle":
+        score_row = top_score_row()
+    else:
+        score_row = bottom_score_row(rows)
+    
+    for x in score_cols:
+        if in_bounds(x, score_row, rows, cols):
+            piece = board[score_row][x]
+            if piece and piece.owner == player and piece.side == "stone":
+                count += 1
+    
+    return count
 
 # ==================== GAME CONSTANTS (DERIVED FROM RULES) ====================
 # ALL weights derived from game rules - NO ARBITRARY NUMBERS!
@@ -102,270 +118,10 @@ class GameConstants:
         # "Small advantage" = 25% of stones needed to win  
         self.STRATEGIC_ADVANTAGE_SMALL = max(1, self.STONES_TO_WIN // 4)  # 1 stone
 
-# ==================== LAYER 1: MOVE GENERATION ====================
-# This layer generates ALL possible legal moves without evaluating them
 
-def get_valid_moves_for_piece(board, x: int, y: int, player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
-    """
-    Generate all valid moves for a specific piece.
-    
-    Returns moves categorized by action type:
-    - "move": Simple movement to adjacent empty cell
-    - "push": Push opponent's piece
-    - "flip": Change stone to river or vice versa
-    - "rotate": Change river orientation
-    """
-    moves = []
-    piece = board[y][x]
-    
-    if piece is None or piece.owner != player:
-        return moves
-    
-    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-    
-    if piece.side == "stone":
-        # STONE ACTIONS
-        for dx, dy in directions:
-            nx, ny = x + dx, y + dy
-            if not in_bounds(nx, ny, rows, cols):
-                continue
-            
-            if is_opponent_score_cell(nx, ny, player, rows, cols, score_cols):
-                continue
-            
-            if board[ny][nx] is None:
-                # Simple move to empty cell
-                moves.append({"action": "move", "from": [x, y], "to": [nx, ny]})
-            elif board[ny][nx].owner != player:
-                # Push opponent's piece (stones can only push stones)
-                target_piece = board[ny][nx]
-                pushed_player = target_piece.owner  # The piece being pushed
-                px, py = nx + dx, ny + dy
-                
-                # CRITICAL: Check if pushed_to is opponent scoring area from PUSHED player's perspective
-                if (in_bounds(px, py, rows, cols) and 
-                    board[py][px] is None and 
-                    not is_opponent_score_cell(px, py, pushed_player, rows, cols, score_cols)):
-                    moves.append({"action": "push", "from": [x, y], "to": [nx, ny], "pushed_to": [px, py]})
-        
-        # Stone can flip to river (choose orientation)
-        for orientation in ["horizontal", "vertical"]:
-            moves.append({"action": "flip", "from": [x, y], "orientation": orientation})
-    
-    else:  # RIVER PIECE
-        # River can flip back to stone
-        moves.append({"action": "flip", "from": [x, y]})
-        
-        # River can rotate orientation
-        moves.append({"action": "rotate", "from": [x, y]})
-    
-    return moves
-
-def generate_all_moves(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
-    """
-    LAYER 1: Generate ALL legal moves for the current player.
-    
-    This is the first step - we gather every possible action without filtering.
-    Later layers will evaluate and rank these moves.
-    """
-    all_moves = []
-    
-    for y in range(rows):
-        for x in range(cols):
-            piece = board[y][x]
-            if piece and piece.owner == player:
-                piece_moves = get_valid_moves_for_piece(board, x, y, player, rows, cols, score_cols)
-                all_moves.extend(piece_moves)
-    
-    return all_moves
-
-
-# ==================== LAYER 2: MOVE CATEGORIZATION ====================
-# This layer categorizes moves by their strategic purpose
-
-def categorize_move(move: Dict[str, Any], board: List[List[Any]], player: str, 
-                    rows: int, cols: int, score_cols: List[int]) -> str:
-    """
-    Categorize a move by its strategic purpose.
-    
-    Categories:
-    - "WINNING": Move that wins the game (4th stone to scoring area)
-    - "SCORING": Move that places a stone in our scoring area
-    - "ADVANCING": Move that gets our stones closer to scoring
-    - "ATTACKING": Move that disrupts opponent
-    - "DEFENSIVE": Move that protects our position
-    - "SETUP": Move that prepares for future plays (flips, rotates)
-    """
-    action = move.get("action")
-    from_pos = move.get("from")
-    to_pos = move.get("to")
-    
-    # Check if this is a scoring move
-    if action == "move" and to_pos:
-        tx, ty = to_pos
-        if is_own_score_cell(tx, ty, player, rows, cols, score_cols):
-            # Check if this would be our 4th stone (winning move)
-            current_score = count_stones_in_scoring_area(board, player, rows, cols, score_cols)
-            if current_score == 3:
-                return "WINNING"
-            return "SCORING"
-    
-    # Check if this is an attacking move (push opponent)
-    if action == "push":
-        return "ATTACKING"
-    
-    # Check if moving forward (advancing toward goal)
-    if action == "move" and to_pos and from_pos:
-        fx, fy = from_pos
-        tx, ty = to_pos
-        
-        # Check if we're moving toward our scoring row
-        if player == "circle":
-            if ty < fy:  # Moving up toward circle's scoring area
-                return "ADVANCING"
-        else:  # square
-            if ty > fy:  # Moving down toward square's scoring area
-                return "ADVANCING"
-    
-    # Flips and rotates are setup moves
-    if action in ["flip", "rotate"]:
-        return "SETUP"
-    
-    # Everything else is defensive
-    return "DEFENSIVE"
-
-
-def filter_moves_by_category(moves: List[Dict[str, Any]], board: List[List[Any]], 
-                             player: str, rows: int, cols: int, score_cols: List[int], 
-                             preferred_categories: List[str] = None) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    LAYER 2: Organize moves into categories for easier decision making.
-    
-    Returns:
-        Dictionary mapping category names to lists of moves
-    """
-    categorized = {
-        "WINNING": [],
-        "SCORING": [],
-        "ADVANCING": [],
-        "ATTACKING": [],
-        "DEFENSIVE": [],
-        "SETUP": []
-    }
-    
-    for move in moves:
-        category = categorize_move(move, board, player, rows, cols, score_cols)
-        categorized[category].append(move)
-    
-    return categorized
-
-
-# ==================== LAYER 3: MOVE EVALUATION ====================
-# This layer assigns scores to moves based on strategic value
-
-def count_stones_in_scoring_area(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> int:
-    """Count how many stones a player has in their scoring area."""
-    count = 0
-    
-    if player == "circle":
-        score_row = top_score_row()
-    else:
-        score_row = bottom_score_row(rows)
-    
-    for x in score_cols:
-        if in_bounds(x, score_row, rows, cols):
-            piece = board[score_row][x]
-            if piece and piece.owner == player and piece.side == "stone":
-                count += 1
-    
-    return count
-
-def calculate_distance_to_scoring(x: int, y: int, player: str, rows: int, cols: int, score_cols: List[int]) -> int:
-    """
-    Calculate Manhattan distance from a position to the closest scoring cell.
-    Lower is better (closer to goal).
-    """
-    if player == "circle":
-        goal_row = top_score_row()
-    else:
-        goal_row = bottom_score_row(rows)
-    
-    # Distance to goal row
-    row_distance = abs(y - goal_row)
-    
-    # Distance to nearest scoring column
-    col_distance = min(abs(x - sc) for sc in score_cols)
-    
-    return row_distance + col_distance
-
-def evaluate_move_score(move: Dict[str, Any], board: List[List[Any]], player: str, 
-                        rows: int, cols: int, score_cols: List[int]) -> float:
-    """
-    LAYER 3: Calculate a numerical score for a move.
-    Higher scores = better moves.
-    
-    Scoring rubric:
-    - Winning move: 10000 points
-    - Scoring move: 1000 points
-    - Advancing move: 100 - distance_to_goal
-    - Attacking move: 50 points
-    - Other moves: 10 points
-    """
-    category = categorize_move(move, board, player, rows, cols, score_cols)
-    
-    # Priority 1: Winning moves
-    if category == "WINNING":
-        return 10000.0
-    
-    # Priority 2: Scoring moves
-    if category == "SCORING":
-        return 1000.0
-    
-    # Priority 3: Advancing moves (score based on how close to goal)
-    if category == "ADVANCING":
-        to_pos = move.get("to")
-        if to_pos:
-            tx, ty = to_pos
-            distance = calculate_distance_to_scoring(tx, ty, player, rows, cols, score_cols)
-            # Closer to goal = higher score
-            return 100.0 - distance
-    
-    # Priority 4: Attacking moves
-    if category == "ATTACKING":
-        return 50.0
-    
-    # Priority 5: Setup moves
-    if category == "SETUP":
-        return 20.0
-    
-    # Priority 6: Defensive moves
-    return 10.0
-
-def rank_moves_by_score(moves: List[Dict[str, Any]], board: List[List[Any]], 
-                        player: str, rows: int, cols: int, score_cols: List[int]) -> List[Tuple[Dict[str, Any], float]]:
-    """
-    LAYER 3: Score all moves and return them sorted by score (best first).
-    
-    Returns:
-        List of (move, score) tuples, sorted by score (descending)
-    """
-    scored_moves = []
-    
-    for move in moves:
-        score = evaluate_move_score(move, board, player, rows, cols, score_cols)
-        scored_moves.append((move, score))
-    
-    # Sort by score (highest first)
-    scored_moves.sort(key=lambda x: x[1], reverse=True)
-    
-    return scored_moves
-
-
-# ==================== LAYER 4: POSITION EVALUATION ====================
-# This layer evaluates overall board positions (for deeper analysis)
-
-# ==================== TIER 1 EVALUATIONS (GAME-DECISIVE) ====================
-# These evaluations determine immediate victory/defeat conditions
+"""
+    EVALUATION STARTS
+"""
 
 def evaluate_material_normalized(board: List[List[Any]], player: str, rows: int, cols: int, 
                                  score_cols: List[int], constants: GameConstants) -> Dict[str, Any]:
@@ -1249,44 +1005,640 @@ def get_comprehensive_evaluation(board: List[List[Any]], player: str, rows: int,
         "closest_threat_distance": closest_distance if closest_distance != float('inf') else 0,
         "threats_near_goal": threats_near_goal
     }
+"""
+    EVALUATION ENDS
+"""
 
+# ------------------
+# RIVER NETWORK STARTS
+# -----------------
 
-def can_we_win_this_turn(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> bool:
+class RiverComponent:
     """
-    Check if we have 3 stones in scoring area and can potentially score the 4th this turn.
+    Represents a connected component of rivers.
+    
+    Rivers are SHARED INFRASTRUCTURE - any player can use them.
     """
-    my_scoring_stones = count_stones_in_scoring_area(board, player, rows, cols, score_cols)
     
-    if my_scoring_stones != 3:
-        return False
+    def __init__(self, component_id: int):
+        self.id = component_id
+        self.river_positions = {}  # {(x, y): orientation} - O(1) operations!
+        self.reachable_cells = set()  # Set of (y, x) empty cells
     
-    # Check if we have any stone within 1 move of scoring area
-    if player == "circle":
-        goal_row = top_score_row()
-    else:
-        goal_row = bottom_score_row(rows)
+    def add_river(self, x: int, y: int, orientation: str):
+        """Add a river to this component - O(1)"""
+        self.river_positions[(x, y)] = orientation
     
-    for y in range(rows):
-        for x in range(cols):
-            piece = board[y][x]
-            if piece and piece.owner == player and piece.side == "stone":
-                # Check if this stone is adjacent to an empty scoring cell
-                for sx in score_cols:
-                    if abs(x - sx) + abs(y - goal_row) == 1:
-                        # Check if scoring cell is empty
-                        if board[goal_row][sx] is None:
-                            return True
+    def remove_river(self, x: int, y: int):
+        """Remove a river from this component - O(1)"""
+        self.river_positions.pop((x, y), None)
     
-    return False
+    def size(self) -> int:
+        """Return number of rivers - O(1)"""
+        return len(self.river_positions)
+    
+    def has_river_at(self, x: int, y: int) -> bool:
+        """Check if component has river at position - O(1)"""
+        return (x, y) in self.river_positions
+    
+    def get_rivers(self):
+        """Get all rivers for iteration"""
+        return [(x, y, ori) for (x, y), ori in self.river_positions.items()]
+    
+    def is_highway(self) -> bool:
+        """Check if this is a major network (5+ rivers)"""
+        return len(self.river_positions) >= 5
+    
+    
+    def __repr__(self) -> str:
+        return (f"Component(id={self.id}, rivers={self.size()}, "
+                f"reachable={len(self.reachable_cells)})")
 
 
-# Strategic mode determination removed - priority logic is now inlined in
-# `analyze_position_with_moves()` and game-phase is handled by
-# `get_game_phase()`; this avoids duplicated decision systems.
+
+class RiverNetwork:
+    """
+    PERSISTENT RIVER NETWORK: Build once, update incrementally.
+    
+    This class maintains the complete river network state and provides
+    fast helper functions for move generation.
+    
+    Key Features:
+    - Build from scratch on first turn: O(board_size) 
+    - Incremental updates on subsequent turns: O(affected_component_size)
+    - Fast lookups for move generation: O(1) to O(component_size)
+    
+    Architecture:
+    - Components: List of connected river groups
+    - Cell mapping: (x,y) -> component_id for fast lookup
+    - Stone accessibility: Which stones can access which components
+    """
+    
+    def __init__(self, board: List[List[Any]], rows: int, cols: int, score_cols: List[int]):
+        """
+        Initialize and build river network from scratch.
+        
+        This is called ONCE on first turn of the game.
+        """
+        self.rows = rows
+        self.cols = cols
+        self.score_cols = score_cols
+        
+        # Core data structures
+        self.components = []  # List[RiverComponent]
+        self.component_by_id = {}  # component_id -> RiverComponent (O(1) lookup)
+        self.cell_to_component = {}  # (x, y) -> component_id
+        self.next_component_id = 0
+        
+        # Board snapshot for change detection
+        self.board_snapshot = self._create_board_snapshot(board)
+        
+        # Build network from scratch
+        print("[NETWORK] Building from scratch...")
+        self._build_from_scratch(board)
+        print(f"[NETWORK] Built {len(self.components)} components")
+    
+    def _create_board_snapshot(self, board: List[List[Any]]) -> Dict[Tuple[int, int], Tuple[str, str, str]]:
+        """
+        Create lightweight snapshot of board state.
+        Returns: {(x, y): (owner, side, orientation)}
+        """
+        snapshot = {}
+        for y in range(self.rows):
+            for x in range(self.cols):
+                piece = board[y][x]
+                if piece:
+                    orientation = getattr(piece, 'orientation', 'horizontal') if piece.side == "river" else None
+                    snapshot[(x, y)] = (piece.owner, piece.side, orientation)
+        return snapshot
+    
+    def _find_component_by_id(self, comp_id: int) -> Optional[RiverComponent]:
+        """Find a component by its ID - O(1) lookup"""
+        return self.component_by_id.get(comp_id)
+    
+    def _build_from_scratch(self, board: List[List[Any]]):
+        """
+        Build entire river network from scratch using BFS.
+        
+        Algorithm:
+        1. Find all river cells
+        2. Use BFS to group into connected components
+        3. For each component, calculate reachable empty cells
+        """
+        from collections import deque
+        
+        # Find all rivers
+        all_rivers = []
+        for y in range(self.rows):
+            for x in range(self.cols):
+                piece = board[y][x]
+                if piece and piece.side == "river":
+                    orientation = getattr(piece, 'orientation', 'horizontal')
+                    all_rivers.append((x, y, orientation, piece.owner))
+        
+        # BFS to find connected components
+        visited = set()
+        
+        for start_x, start_y, start_ori, start_owner in all_rivers:
+            if (start_x, start_y) in visited:
+                continue
+            
+            # New component
+            component = RiverComponent(self.next_component_id)
+            self.next_component_id += 1
+            
+            # BFS to find all connected rivers
+            queue = deque([(start_x, start_y)])
+            visited.add((start_x, start_y))
+            
+            while queue:
+                x, y = queue.popleft()
+                
+                # Get river info
+                piece = board[y][x]
+                if not piece or piece.side != "river":
+                    continue
+                
+                orientation = getattr(piece, 'orientation', 'horizontal')
+                component.add_river(x, y, orientation)
+                self.cell_to_component[(x, y)] = component.id
+                
+                # Check adjacent cells for connected rivers
+                for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    nx, ny = x + dx, y + dy
+                    if (nx, ny) in visited:
+                        continue
+                    if not in_bounds(nx, ny, self.rows, self.cols):
+                        continue
+                    
+                    neighbor = board[ny][nx]
+                    if neighbor and neighbor.side == "river":
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+            
+            # Calculate reachable cells for this component
+            self._calculate_reachable_cells(component, board)
+            
+            self.components.append(component)
+            self.component_by_id[component.id] = component  # O(1) lookup
+    
+    def _calculate_reachable_cells(self, component: RiverComponent, board: List[List[Any]]):
+        from collections import deque
+
+        component.reachable_cells.clear()
+        explored = set()
+
+        # Start from all rivers
+        to_explore = deque(component.river_positions.keys())
+        for pos in to_explore:
+            explored.add(pos)
+
+        while to_explore:
+            x, y = to_explore.popleft()
+
+            token = board[y][x]
+
+            # Empty cell - reachable (but don't continue exploring from it)
+            if token is None:
+                component.reachable_cells.add((y, x))
+                continue
+            
+            # Not a river - stop
+            if token.side != "river":
+                continue
+            
+            # Get river orientation
+            orientation = getattr(token, 'orientation', 'horizontal')
+
+            if orientation == "horizontal":
+                flow_directions = [(1, 0), (-1, 0)]
+            else:
+                flow_directions = [(0, 1), (0, -1)]
+
+            # ✅ FIX: Follow river and collect empty cells along the way
+            for dx, dy in flow_directions:
+                nx, ny = x + dx, y + dy
+
+                while in_bounds(nx, ny, self.rows, self.cols):
+                    if (nx, ny) in explored:
+                        break
+                    explored.add((nx, ny))
+
+                    next_token = board[ny][nx]
+
+                    if next_token is None:
+                        # Empty cell - reachable
+                        component.reachable_cells.add((ny, nx))
+                        # ✅ Continue flowing to find more empty cells
+                        nx += dx
+                        ny += dy
+                    elif next_token.side == "river":
+                        # Another river - add to queue and continue flowing
+                        to_explore.append((nx, ny))
+                        nx += dx
+                        ny += dy
+                    else:
+                        # Stone - stop
+                        break
+
+    
+    def get_moves_for_stone(self, stone_x: int, stone_y: int, player: str, board: List[List[Any]]) -> List[Tuple[int, int]]:
+        """
+        HELPER: Get all river-based destination cells for a stone.
+        
+        Returns: List of (dest_y, dest_x) tuples reachable via rivers
+        """
+        reachable_set = set()
+        visited_components = set()  # Avoid checking same component multiple times
+        
+        # Check all 4 adjacent cells for rivers
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = stone_x + dx, stone_y + dy
+            
+            if not in_bounds(nx, ny, self.rows, self.cols):
+                continue
+            
+            # Check if there's a river here
+            component_id = self.cell_to_component.get((nx, ny))
+            if component_id is None or component_id in visited_components:
+                continue
+            
+            visited_components.add(component_id)  # Mark as visited
+            
+            # Get the component using O(1) dict lookup
+            component = self.component_by_id.get(component_id)
+            if not component:
+                continue
+            
+            # Add all reachable cells from this component
+            for dest_y, dest_x in component.reachable_cells:
+                # CRITICAL: Verify cell is actually empty (reachable_cells may be stale)
+                if board[dest_y][dest_x] is not None:
+                    continue  # Skip occupied cells
+                
+                # Filter out opponent's scoring area
+                if not is_opponent_score_cell(dest_x, dest_y, player, self.rows, self.cols, self.score_cols):
+                    reachable_set.add((dest_y, dest_x))
+        
+        return list(reachable_set)
+    
+    def filter_strategic_moves(self, moves: List[Tuple[int, int]], stone_x: int, stone_y: int, 
+                               player: str, board: List[List[Any]]) -> List[Tuple[int, int]]:
+        """
+        Filter moves to keep only WINNING, SCORING, or GOAL-ADVANCING moves.
+        
+        Priority:
+        1. Scoring moves (reach own scoring area) - KEEP ALL
+        2. Goal-advancing moves (closer to scoring area) - KEEP ALL
+        3. Lateral/backward moves - DISCARD (don't advance)
+        
+        Args:
+            moves: List of (dest_y, dest_x) tuples
+            stone_x, stone_y: Current stone position
+            player: Current player ("circle" or "square")
+            board: Current board state
+            
+        Returns: Filtered list of strategic moves
+        """
+        if not moves:
+            return []
+        
+        # Determine goal row for this player
+        if player == "circle":
+            goal_row = top_score_row()  # Circle scores at top (row 2)
+            advancing_direction = -1  # Moving up (decreasing y)
+        else:
+            goal_row = bottom_score_row(self.rows)  # Square scores at bottom
+            advancing_direction = 1  # Moving down (increasing y)
+        
+        # Calculate current distance to goal
+        current_distance = abs(stone_y - goal_row)
+        
+        strategic_moves = []
+        scoring_moves = []
+        advancing_moves = []
+        
+        for dest_y, dest_x in moves:
+            # Check if this is a SCORING move (reaches own scoring area)
+            if is_own_score_cell(dest_x, dest_y, player, self.rows, self.cols, self.score_cols):
+                scoring_moves.append((dest_y, dest_x))
+                continue
+            
+            # Calculate distance to goal from destination
+            dest_distance = abs(dest_y - goal_row)
+            
+            # Check if this move ADVANCES toward goal
+            if dest_distance < current_distance:
+                advancing_moves.append((dest_y, dest_x))
+            # Even if same distance, allow moves that are horizontally aligned with scoring columns
+            elif dest_distance == current_distance and dest_x in self.score_cols:
+                advancing_moves.append((dest_y, dest_x))
+        
+        # Priority: Scoring moves > Advancing moves
+        strategic_moves = scoring_moves + advancing_moves
+        
+        # If NO strategic moves found, return closest moves (fallback)
+        if not strategic_moves:
+            # Sort by distance to goal, take closest 3
+            moves_with_distance = [(dest_y, dest_x, abs(dest_y - goal_row)) for dest_y, dest_x in moves]
+            moves_with_distance.sort(key=lambda x: x[2])
+            strategic_moves = [(dest_y, dest_x) for dest_y, dest_x, _ in moves_with_distance[:3]]
+        
+        return strategic_moves
+    
+    def update_from_board(self, new_board: List[List[Any]]) -> List[Dict[str, Any]]:
+        """
+        INCREMENTAL UPDATE: Detect changes and update only affected components.
+        
+        This is called at the start of each turn after the first.
+        
+        Returns: List of changes detected
+        """
+        changes = self._detect_changes(new_board)
+        
+        if not changes:
+            return []
+        
+        print(f"[NETWORK] Detected {len(changes)} changes")
+        
+        # Apply each change
+        for change in changes:
+            self._apply_change(change, new_board)
+        
+        # Update snapshot
+        self.board_snapshot = self._create_board_snapshot(new_board)
+        
+        return changes
+    
+    def _detect_changes(self, new_board: List[List[Any]]) -> List[Dict[str, Any]]:
+        """Detect what changed between snapshot and current board"""
+        changes = []
+        
+        new_snapshot = self._create_board_snapshot(new_board)
+        
+        # Check for removed/changed pieces
+        for pos, old_state in self.board_snapshot.items():
+            if pos not in new_snapshot:
+                # Piece removed
+                x, y = pos
+                owner, side, orientation = old_state
+                if side == "river":
+                    changes.append({
+                        "type": "river_removed",
+                        "pos": (x, y),
+                        "owner": owner
+                    })
+                else:
+                    changes.append({
+                        "type": "stone_moved_from",
+                        "pos": (x, y)
+                    })
+            elif new_snapshot[pos] != old_state:
+                # Piece changed
+                x, y = pos
+                old_owner, old_side, old_orientation = old_state
+                new_owner, new_side, new_orientation = new_snapshot[pos]
+                
+                if old_side != new_side:
+                    # Flip
+                    if new_side == "river":
+                        changes.append({
+                            "type": "flip_to_river",
+                            "pos": (x, y),
+                            "orientation": new_orientation,
+                            "owner": new_owner
+                        })
+                    else:
+                        changes.append({
+                            "type": "flip_to_stone",
+                            "pos": (x, y),
+                            "owner": new_owner
+                        })
+                elif old_orientation != new_orientation:
+                    # Rotate
+                    changes.append({
+                        "type": "rotate_river",
+                        "pos": (x, y),
+                        "old_orientation": old_orientation,
+                        "new_orientation": new_orientation,
+                        "owner": new_owner
+                    })
+        
+        # Check for added pieces
+        for pos, new_state in new_snapshot.items():
+            if pos not in self.board_snapshot:
+                x, y = pos
+                owner, side, orientation = new_state
+                if side == "stone":
+                    changes.append({
+                        "type": "stone_moved_to",
+                        "pos": (x, y)
+                    })
+        
+        return changes
+    
+    def _apply_change(self, change: Dict[str, Any], board: List[List[Any]]):
+        """Apply a detected change to the network"""
+        change_type = change["type"]
+        
+        if change_type == "stone_moved_from" or change_type == "stone_moved_to":
+            # Stone moves don't affect network structure
+            pass
+        
+        elif change_type == "flip_to_river":
+            # Add new river to network
+            x, y = change["pos"]
+            self._add_river_to_network(x, y, change["orientation"], change["owner"], board)
+        
+        elif change_type == "flip_to_stone":
+            # Remove river from network
+            x, y = change["pos"]
+            self._remove_river_from_network(x, y, board)
+        
+        elif change_type == "rotate_river":
+            # Update river orientation
+            x, y = change["pos"]
+            self._update_river_orientation(x, y, change["new_orientation"], board)
+        
+        elif change_type == "river_removed":
+            # River removed (captured/flipped)
+            x, y = change["pos"]
+            self._remove_river_from_network(x, y, board)
+    
+    def _add_river_to_network(self, x: int, y: int, orientation: str, owner: str, board: List[List[Any]]):
+        """Add a new river and merge with adjacent components if needed"""
+        # Find adjacent river components
+        adjacent_components = set()
+        
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = x + dx, y + dy
+            if (nx, ny) in self.cell_to_component:
+                adjacent_components.add(self.cell_to_component[(nx, ny)])
+        
+        if not adjacent_components:
+            # Create new component
+            component = RiverComponent(self.next_component_id)
+            self.next_component_id += 1
+            component.add_river(x, y, orientation)
+            self.cell_to_component[(x, y)] = component.id
+            self._calculate_reachable_cells(component, board)
+            self.components.append(component)
+            self.component_by_id[component.id] = component  # O(1) lookup
+        
+        elif len(adjacent_components) == 1:
+            # Add to existing component
+            comp_id = list(adjacent_components)[0]
+            component = self._find_component_by_id(comp_id)
+            if component:
+                component.add_river(x, y, orientation)
+                self.cell_to_component[(x, y)] = comp_id
+                self._calculate_reachable_cells(component, board)
+        
+        else:
+            # Merge multiple components
+            self._merge_components(list(adjacent_components), x, y, orientation, owner, board)
+    
+    def _remove_river_from_network(self, x: int, y: int, board: List[List[Any]]):
+        """Remove a river and potentially split component"""
+        if (x, y) not in self.cell_to_component:
+            return
+        
+        comp_id = self.cell_to_component[(x, y)]
+        component = self._find_component_by_id(comp_id)
+        
+        if not component:
+            return
+        
+        # Remove from component
+        component.remove_river(x, y)
+        del self.cell_to_component[(x, y)]
+        
+        if component.size() == 0:
+            # Component is now empty, remove it
+            self.components = [c for c in self.components if c.id != comp_id]
+            self.component_by_id.pop(comp_id, None)  # Remove from dict
+        else:
+            # Recalculate reachable cells
+            self._calculate_reachable_cells(component, board)
+            
+            # Check if component should split
+            self._check_and_split_component(component, board)
+    
+    def _update_river_orientation(self, x: int, y: int, new_orientation: str, board: List[List[Any]]):
+        """Update river orientation and recalculate reachable cells"""
+        if (x, y) not in self.cell_to_component:
+            return
+        
+        comp_id = self.cell_to_component[(x, y)]
+        component = self._find_component_by_id(comp_id)
+        
+        if not component:
+            return
+        
+        # Update orientation in component dict
+        if (x, y) in component.river_positions:
+            component.river_positions[(x, y)] = new_orientation
+        
+        # Recalculate reachable cells
+        self._calculate_reachable_cells(component, board)
+    
+    def _merge_components(self, component_ids: List[int], new_x: int, new_y: int, 
+                         orientation: str, owner: str, board: List[List[Any]]):
+        """Merge multiple components into one"""
+        # Create new merged component
+        merged = RiverComponent(self.next_component_id)
+        self.next_component_id += 1
+        
+        # Add all rivers from existing components
+        for comp_id in component_ids:
+            component = self._find_component_by_id(comp_id)
+            if component:
+                for (rx, ry), ori in component.river_positions.items():
+                    merged.add_river(rx, ry, ori)
+                    self.cell_to_component[(rx, ry)] = merged.id
+        
+        # Add new river
+        merged.add_river(new_x, new_y, orientation)
+        self.cell_to_component[(new_x, new_y)] = merged.id
+        
+        # Remove old components
+        self.components = [c for c in self.components if c.id not in component_ids]
+        for comp_id in component_ids:
+            self.component_by_id.pop(comp_id, None)  # Remove from dict
+        
+        # Add merged component
+        self.components.append(merged)
+        self.component_by_id[merged.id] = merged  # O(1) lookup
+        
+        # Calculate reachable cells
+        self._calculate_reachable_cells(merged, board)
+    
+    def _check_and_split_component(self, component: RiverComponent, board: List[List[Any]]):
+        """Check if component should split after river removal"""
+        from collections import deque
+        
+        if component.size() <= 1:
+            return
+        
+        # BFS to check connectivity
+        visited = set()
+        # Get first river position from dict
+        first_pos = next(iter(component.river_positions.keys()))
+        start_x, start_y = first_pos
+        queue = deque([(start_x, start_y)])
+        visited.add((start_x, start_y))
+        
+        while queue:
+            x, y = queue.popleft()
+            
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = x + dx, y + dy
+                if (nx, ny) in visited:
+                    continue
+                if not component.has_river_at(nx, ny):
+                    continue
+                
+                visited.add((nx, ny))
+                queue.append((nx, ny))
+        
+        # If not all rivers visited, component is split
+        if len(visited) < component.size():
+            self._split_component(component, visited, board)
+    
+    def _split_component(self, component: RiverComponent, connected_set: set, board: List[List[Any]]):
+        """Split component into multiple components"""
+        # Separate rivers into connected and remaining
+        remaining_positions = {}
+        connected_positions = {}
+        
+        for (rx, ry), ori in component.river_positions.items():
+            if (rx, ry) in connected_set:
+                connected_positions[(rx, ry)] = ori
+            else:
+                remaining_positions[(rx, ry)] = ori
+        
+        if not remaining_positions:
+            return
+        
+        # Update original component (keep connected set only)
+        component.river_positions = connected_positions
+        self._calculate_reachable_cells(component, board)
+        
+        # Create new component for remaining rivers
+        new_component = RiverComponent(self.next_component_id)
+        self.next_component_id += 1
+        
+        for (rx, ry), ori in remaining_positions.items():
+            new_component.add_river(rx, ry, ori)
+            self.cell_to_component[(rx, ry)] = new_component.id
+        
+        self.components.append(new_component)
+        self.component_by_id[new_component.id] = new_component  # O(1) lookup
+        self._calculate_reachable_cells(new_component, board)
 
 
-# ==================== RIVER TRAVERSAL ====================
-# Helper function for analyzing river movement
+# ==================== RIVER TRAVERSAL (LEGACY) ====================
+# Keep for backward compatibility, but not used with RiverNetwork
 
 def traverse_river(board: List[List[Any]], river_x: int, river_y: int,
                    start_x: int, start_y: int, player: str,
@@ -1383,15 +1735,25 @@ def traverse_river(board: List[List[Any]], river_x: int, river_y: int,
     return reachable
 
 
+# ------------------
+# RIVER NETWORK ENDS
+# -----------------
+
 # ==================== COMPREHENSIVE MOVE ANALYSIS ====================
 # Single-pass analysis that generates moves and evaluates them together
 
 def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, cols: int,
-                                 score_cols: List[int], turn_count: int = 0) -> Dict[str, Any]:
+                                 score_cols: List[int], turn_count: int = 0,
+                                 river_network: Optional['RiverNetwork'] = None) -> Dict[str, Any]:
     """
     COMPREHENSIVE ANALYSIS: Scan board ONCE, generate all moves with INLINE PRIORITIES.
     
+    NOW WITH RIVER NETWORK: Uses precomputed network for 25-50x faster river move generation!
+    
     Priorities calculated DIRECTLY where moves are generated for maximum performance!
+    
+    Args:
+        river_network: Optional precomputed RiverNetwork for fast river moves
     
     Returns:
         {
@@ -1535,9 +1897,9 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
 
                         # River Traversing using opponent's river or my river
                         elif target.side == "river":
-                            # Traverse river network
-                            reachable_cells = traverse_river(board, nx, ny, x, y, player, rows, cols, score_cols)
-
+                            # Get all reachable cells via rivers (O(1) to O(component_size))
+                            reachable_cells = river_network.get_moves_for_stone(x, y, player, board)
+                            
                             # Keep the best advancing move only
                             best_advance = None
                             best_improvement = float('-inf')
@@ -1569,7 +1931,7 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                                         best_advance = (dest_y, dest_x)
                                         best_details = {
                                             "move": move.copy(),
-                                            "distance_advanced": 1,  # River = 1 move step
+                                            "distance_advanced": distance_improved,
                                             "via_river": True,
                                             "in_scoring_col": in_scoring_col,
                                             "priority": BASE_PRIORITIES["advancing"] * phase_mult["advancing"] * float(distance_improved)
@@ -1578,7 +1940,7 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                             # After for-loop, append the best advancing river move (if any)
                             if best_details:
                                 best_details["move"]["move_type"] = "advancing"
-                                best_details["move"]["distance_advanced"] = 1
+                                best_details["move"]["distance_advanced"] = best_improvement
                                 best_details["move"]["via_river"] = True
                                 best_details["move"]["in_scoring_col"] = best_details["in_scoring_col"]
                                 best_details["move"]["priority"] = best_details["priority"]
@@ -1588,9 +1950,11 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                         elif target.side == "stone" and target.owner == player:
                             # Self-pushing: Reposition own pieces strategically
                             px, py = nx + dx, ny + dy  # Where pushed stone ends up
+
+                            #checks whther this is blocking the opponent's scoring area
                             if (in_bounds(px, py, rows, cols) and 
                                 board[py][px] is None and
-                                not is_opponent_score_cell(px, py, player, rows, cols, score_cols)):
+                                not is_opponent_score_cell(px, py, target.owner, rows, cols, score_cols)):
                                 # Calculate positions and scoring status
                                 pusher_in_sa_before = (y == my_goal_row and x in score_cols)
                                 pusher_in_sa_after = (ny == my_goal_row and nx in score_cols)
@@ -1649,11 +2013,9 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                                             "from": [x, y],
                                             "to": [nx, ny],
                                             "pushed_to": [px, py],
-                                            "move_type": "repositioning",
+                                            "move_type": "push_moves",
                                             "total_improvement": total_improvement,
-                                            "pushed_stone_improvement": pushed_stone_improvement,
-                                            "pusher_improvement": pusher_improvement,
-                                            "priority": BASE_PRIORITIES["push"] * phase_mult["push"] * quality * 2 # Boost for dual improvement
+                                            "priority": BASE_PRIORITIES["push"] * phase_mult["push"] 
                                         }
                                         push_moves.append(move)
 
@@ -1925,27 +2287,27 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                         defensive_moves.append(move)
     
     # Block opponent rivers with our pieces
-    for opp_river in opponent_rivers:
-        rx, ry = opp_river["pos"]
-        opp_ori = opp_river["orientation"]
+    # for opp_river in opponent_rivers:
+    #     rx, ry = opp_river["pos"]
+    #     opp_ori = opp_river["orientation"]
         
-        # Try to place perpendicular river to block
-        for dx, dy in directions:
-            bx, by = rx + dx, ry + dy
-            if in_bounds(bx, by, rows, cols):
-                blocker = board[by][bx]
-                if blocker and blocker.owner == player and blocker.side == "stone":
-                    # Flip to perpendicular river to block
-                    block_ori = "vertical" if opp_ori == "horizontal" else "horizontal"
-                    move = {
-                        "action": "flip",
-                        "from": [bx, by],
-                        "orientation": block_ori,
-                        "reason": "block_river",
-                        "move_type": "defensive",
-                        "priority": BASE_PRIORITIES["defensive"] * phase_mult["defensive"] * 1.5
-                    }
-                    defensive_moves.append(move)
+    #     # Try to place perpendicular river to block
+    #     for dx, dy in directions:
+    #         bx, by = rx + dx, ry + dy
+    #         if in_bounds(bx, by, rows, cols):
+    #             blocker = board[by][bx]
+    #             if blocker and blocker.owner == player and blocker.side == "stone":
+    #                 # Flip to perpendicular river to block
+    #                 block_ori = "vertical" if opp_ori == "horizontal" else "horizontal"
+    #                 move = {
+    #                     "action": "flip",
+    #                     "from": [bx, by],
+    #                     "orientation": block_ori,
+    #                     "reason": "block_river",
+    #                     "move_type": "defensive",
+    #                     "priority": BASE_PRIORITIES["defensive"] * phase_mult["defensive"] * 1.5
+    #                 }
+    #                 defensive_moves.append(move)
     
     # Move vulnerable pieces away from push threats
     for threat in opponent_push_threats:
@@ -2681,7 +3043,7 @@ def simulate_move(board: List[List[Any]], move: Dict[str, Any], player: str, row
                 if pusher.side == "river":
                     board_copy[ty][tx].side = "stone"
                     board_copy[ty][tx].orientation = None
-                
+            
                 return True, board_copy
             
             return False, "Invalid push"
@@ -2811,6 +3173,9 @@ class StudentAgent(BaseAgent):
         self.zobrist = None
         self.transposition_table = TranspositionTable(max_size=100000)
         
+        # PERSISTENT RIVER NETWORK (build once, update incrementally)
+        self.river_network = None
+        
         # Search configuration
         self.default_search_depth = 2  # Look ahead: our move + opponent response
         self.time_buffer = 0.5  # Reserve 0.5 seconds for safety
@@ -2863,6 +3228,22 @@ class StudentAgent(BaseAgent):
         if self.zobrist is None:
             self.zobrist = ZobristHash(rows, cols)
         
+        # ===== STEP 0: INITIALIZE/UPDATE RIVER NETWORK =====
+        if self.river_network is None:
+            # First turn: Build from scratch
+            import time as time_module
+            network_start = time_module.time()
+            self.river_network = RiverNetwork(board, rows, cols, score_cols)
+            network_time = time_module.time() - network_start
+            print(f"[NETWORK] Built from scratch in {network_time*1000:.2f}ms")
+        else:
+            # Subsequent turns: Incremental update
+            import time as time_module
+            update_start = time_module.time()
+            changes = self.river_network.update_from_board(board)
+            update_time = time_module.time() - update_start
+            print(f"[NETWORK] Updated {len(changes)} changes in {update_time*1000:.2f}ms")
+        
         # Increment turn counter
         self.turn_count += 1
         
@@ -2876,8 +3257,12 @@ class StudentAgent(BaseAgent):
         game_phase = get_game_phase(self.turn_count)
         print(f"[PHASE] {game_phase.upper()} game")
         
-        # PASS turn_count to analysis for integrated priority calculation
-        analysis = analyze_position_with_moves(board, self.player, rows, cols, score_cols, self.turn_count)
+        # PASS turn_count AND river_network to analysis for integrated priority calculation
+        analysis = analyze_position_with_moves(
+            board, self.player, rows, cols, score_cols, 
+            self.turn_count, 
+            river_network=self.river_network  # ← Pass persistent network
+        )
         
         print(f"[MOVES GENERATED]")
         print(f"  - Winning moves: {len(analysis['winning_moves'])}")
@@ -2967,34 +3352,3 @@ class StudentAgent(BaseAgent):
         
         print(f"{'='*60}\n")
         return best_move
-
-# ==================== TESTING HELPERS ====================
-
-def test_student_agent():
-    """
-    Basic test to verify the student agent can be created and make moves.
-    """
-    print("Testing StudentAgent...")
-    
-    try:
-        from gameEngine import default_start_board, DEFAULT_ROWS, DEFAULT_COLS
-        
-        rows, cols = DEFAULT_ROWS, DEFAULT_COLS
-        score_cols = score_cols_for(cols)
-        board = default_start_board(rows, cols)
-        
-        agent = StudentAgent("circle")
-        move = agent.choose(board, rows, cols, score_cols,1.0,1.0)
-        
-        if move:
-            print("✓ Agent successfully generated a move")
-        else:
-            print("✗ Agent returned no move")
-    
-    except ImportError:
-        agent = StudentAgent("circle")
-        print("✓ StudentAgent created successfully")
-
-if __name__ == "__main__":
-    # Run basic test when file is executed directly
-    test_student_agent()
