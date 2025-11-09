@@ -1,92 +1,3 @@
-"""
-Student Agent Implementation for River and Stones Game
-
-ARCHITECTURE OVERVIEW:
-=====================
-MINIMAX SEARCH + STRATEGIC HEURISTICS
-
-This agent combines game tree search with domain-specific heuristics:
-
-LAYER 1-7: STRATEGIC EVALUATION (Heuristic Foundation)
-   1. Board Evaluation: Score current position
-   2. Strategic Mode: Determine game phase (attacking/defending)
-   3. Targeted Move Generation: Generate relevant moves only
-   4. Move Categorization: Classify by purpose (winning/scoring/attacking)
-   5. Move Scoring: Assign numerical values
-   6. Threat Assessment: Identify opponent dangers
-   7. Position Evaluation: Complete board analysis
-
-LAYER 8-11: MINIMAX SEARCH (Look-Ahead)
-   8. Zobrist Hashing: Fast board position comparison (O(1))
-   9. Transposition Table: Cache evaluated positions
-   10. Move Ordering: Search best moves first (improves pruning)
-   11. Minimax + Alpha-Beta: Game tree search with pruning
-
-HOW IT WORKS:
--------------
-1. **Strategic Assessment**: Quick analysis determines game state
-   - "Can we win?" → Take winning move immediately
-   - "Is opponent threatening?" → Focus on defense
-   - "Are we ahead?" → Play safe, protect lead
-
-2. **Minimax Search**: Look ahead to predict opponent responses
-   - Search depth 1-3 (adaptive based on time)
-   - Alpha-beta pruning eliminates bad branches
-   - Transposition table avoids re-computing positions
-   - Move ordering: search promising moves first
-
-3. **Evaluation Function**: Scores board positions
-   - Stones in scoring area: +1000 per stone
-   - Stone advancement: +100 per stone closer to goal
-   - Opponent's progress: negative values
-   - Returns single number: positive = good, negative = bad
-
-4. **Time Management**: Adaptive search depth
-   - More time (>30s) → Search depth 3 (our move + opponent + our response)
-   - Medium time (10-30s) → Search depth 2 (our move + opponent)
-   - Low time (<10s) → Search depth 1 or fallback to heuristic
-
-WHY MINIMAX + HEURISTICS:
--------------------------
-- **Minimax**: Looks ahead, predicts opponent responses
-- **Heuristics**: Guides search, prunes bad branches early
-- **Combined**: Smart search + domain knowledge = Strong play
-- **No pure brute force**: Would be too slow without heuristics
-
-EXAMPLE DECISION FLOW:
----------------------
-```
-1. Board State: Opponent has 3 stones in scoring area
-2. Strategic Mode: DESPERATE_DEFENSE (opponent about to win!)
-3. Move Generation: Generate ONLY defensive moves (30 moves vs 100+)
-4. Minimax Search:
-   - Try defensive move A:
-     * Opponent's best response: Score opponent stones
-     * Resulting position: -10000 (we lose)
-   - Try defensive move B:
-     * Opponent's best response: Advance stone
-     * Resulting position: -200 (we survive)
-   - Alpha-beta: Prune remaining moves (B is good enough)
-5. Decision: Play move B (prevents opponent win)
-```
-
-MODULAR DESIGN:
---------------
-Each layer is independent and testable:
-- Want better evaluation? → Modify evaluate_position()
-- Want deeper search? → Increase search_depth
-- Want faster search? → Improve move ordering
-- Want to test heuristics? → Disable minimax, use fallback
-
-KEY OPTIMIZATIONS:
------------------
-1. **Zobrist Hashing**: O(1) position lookup vs O(n²) comparison
-2. **Alpha-Beta Pruning**: 50-90% fewer nodes searched
-3. **Transposition Table**: Avoid recomputing same positions
-4. **Move Ordering**: Search best moves first (more cutoffs)
-5. **Targeted Generation**: Generate 30 relevant moves vs 100+ total
-6. **Adaptive Depth**: Search deeper when time allows
-"""
 
 import random
 import copy
@@ -500,34 +411,107 @@ def evaluate_distance_normalized(board: List[List[Any]], player: str, rows: int,
     TIER 1: Evaluate distance from scoring area (advancement).
     Returns NORMALIZED score.
     
-    Measures how close pieces are to scoring. Closer = better position.
+    Uses BFS PATHFINDING through river networks to calculate ACTUAL move count,
+    not Manhattan distance. This correctly values river highways!
     
     Returns:
         {
-            "my_avg_distance": float - Average distance (normalized 0-1),
+            "my_avg_distance": float - Average MOVE COUNT (normalized 0-1),
             "opp_avg_distance": float,
-            "my_closest": int - Distance of closest stone,
+            "my_closest": int - Move count of closest stone,
             "opp_closest": int,
-            "advantage": float - Positive means we're closer
+            "advantage": float - Positive means we need fewer moves
         }
     """
+    from collections import deque
+    
     opponent = get_opponent(player)
+    
+    # Helper: BFS to find actual move count through rivers
+    def calculate_move_distance(start_x: int, start_y: int, goal_row: int, player_name: str) -> int:
+        """
+        Use BFS to find minimum moves to scoring area through river network.
+        
+        CRITICALLY: Considers opponent blockers in the path!
+        """
+        queue = deque([(start_x, start_y, 0)])  # (x, y, move_count)
+        visited = set()
+        visited.add((start_x, start_y))
+        
+        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        min_moves = constants.MAX_DISTANCE
+        
+        opponent_name = get_opponent(player_name)
+        
+        while queue:
+            x, y, moves = queue.popleft()
+            
+            # Check if we reached scoring area
+            if y == goal_row and x in score_cols:
+                min_moves = min(min_moves, moves)
+                continue
+            
+            # Try all 4 directions
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                
+                if not in_bounds(nx, ny, rows, cols):
+                    continue
+                if (nx, ny) in visited:
+                    continue
+                
+                target = board[ny][nx]
+                
+                # Empty cell - can move there (1 move)
+                if target is None:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny, moves + 1))
+                
+                # OPPONENT PIECE - BLOCKED! Cannot move here
+                elif target.owner == opponent_name:
+                    # Mark as visited but DON'T add to queue
+                    visited.add((nx, ny))
+                    continue
+                
+                # My river - can traverse it for multi-square movement
+                elif target.owner == player_name and target.side == "river":
+                    # Traverse entire river network from this point
+                    reachable = traverse_river(board, nx, ny, x, y, player_name, rows, cols, score_cols)
+                    for reach_y, reach_x in reachable:
+                        if (reach_x, reach_y) not in visited:
+                            visited.add((reach_x, reach_y))
+                            queue.append((reach_x, reach_y, moves + 1))  # River traversal = 1 move!
+        
+        return min_moves
     
     my_distances = []
     opp_distances = []
     
+    my_goal_row = top_score_row() if player == "circle" else bottom_score_row(rows)
+    opp_goal_row = bottom_score_row(rows) if player == "circle" else top_score_row()
+    
+    # Calculate move distances for all stones
     for y in range(rows):
         for x in range(cols):
             piece = board[y][x]
-            if piece and piece.side == "stone":
-                distance = calculate_distance_to_scoring(x, y, piece.owner, rows, cols, score_cols)
-                
-                if piece.owner == player:
-                    my_distances.append(distance)
-                else:
-                    opp_distances.append(distance)
+            if piece is None:
+                continue
+            
+            if piece.owner == player and piece.side == "stone":
+                # Skip if already in scoring area
+                if y == my_goal_row and x in score_cols:
+                    continue
+                move_dist = calculate_move_distance(x, y, my_goal_row, player)
+                my_distances.append(move_dist)
+            
+            elif piece.owner == opponent and piece.side == "stone":
+                # Skip if already in scoring area
+                if y == opp_goal_row and x in score_cols:
+                    continue
+                move_dist = calculate_move_distance(x, y, opp_goal_row, opponent)
+                opp_distances.append(move_dist)
     
-    # Calculate averages
+    # Calculate averages based on MOVE COUNT
     my_avg = sum(my_distances) / len(my_distances) if my_distances else constants.MAX_DISTANCE
     opp_avg = sum(opp_distances) / len(opp_distances) if opp_distances else constants.MAX_DISTANCE
     
@@ -539,7 +523,7 @@ def evaluate_distance_normalized(board: List[List[Any]], player: str, rows: int,
     my_closest = min(my_distances) if my_distances else constants.MAX_DISTANCE
     opp_closest = min(opp_distances) if opp_distances else constants.MAX_DISTANCE
     
-    # Advantage: positive if we're closer
+    # Advantage: positive if we need fewer moves to score
     advantage = opp_avg_norm - my_avg_norm
     
     return {
@@ -1296,92 +1280,127 @@ def can_we_win_this_turn(board: List[List[Any]], player: str, rows: int, cols: i
     return False
 
 
-# ==================== LAYER 5: STRATEGIC MODE DETERMINATION ====================
-# This layer determines overall strategy based on board evaluation
+# Strategic mode determination removed - priority logic is now inlined in
+# `analyze_position_with_moves()` and game-phase is handled by
+# `get_game_phase()`; this avoids duplicated decision systems.
 
-def determine_strategic_mode(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> str:
+
+# ==================== RIVER TRAVERSAL ====================
+# Helper function for analyzing river movement
+
+def traverse_river(board: List[List[Any]], river_x: int, river_y: int,
+                   start_x: int, start_y: int, player: str,
+                   rows: int, cols: int, score_cols: List[int]) -> List[Tuple[int, int]]:
     """
-    Determine the strategic mode using MULTI-DIMENSIONAL evaluation.
-    NO HARDCODED ARBITRARY NUMBERS - all thresholds derived from game rules!
+    Traverse a river network to find all reachable empty cells.
     
-    Strategic Modes:
-    - "CAN_WIN": We can win this turn (always prioritize!)
-    - "DESPERATE_DEFENSE": Opponent can win next turn - MUST defend
-    - "DEFENSIVE": We're losing badly - focus on defense
-    - "PROTECT_LEAD": We're winning strongly - protect position
-    - "AGGRESSIVE": We're slightly ahead - press advantage
-    - "BALANCED": Even game - mix of advance and attack
+    Uses BFS to follow river paths:
+    - Horizontal rivers allow movement left/right along the row
+    - Vertical rivers allow movement up/down along the column
+    - Can chain through connected rivers
+    
+    Args:
+        board: Current board state
+        river_x, river_y: Starting river position
+        start_x, start_y: Original stone position
+        player: Current player
+        rows, cols: Board dimensions
+        score_cols: Scoring columns
+    
+    Returns:
+        List of (y, x) tuples of reachable empty cells
     """
-    # Initialize constants
-    constants = GameConstants(rows, cols)
+    from collections import deque
     
-    # Check if we can win this turn (highest priority)
-    my_win = evaluate_can_win_this_turn(board, player, rows, cols, score_cols, constants)
-    if my_win["can_win"]:
-        return "CAN_WIN"
-    
-    # Check if opponent can win next turn
+    reachable = []
+    explored = set()
+    to_explore = deque([(river_x, river_y)])
     opponent = get_opponent(player)
-    opp_win = evaluate_can_win_this_turn(board, opponent, rows, cols, score_cols, constants)
-    if opp_win["can_win"]:
-        return "DESPERATE_DEFENSE"
     
-    # Get comprehensive evaluations (material + distance only, no tempo)
-    material = evaluate_material_normalized(board, player, rows, cols, score_cols, constants)
-    distance = evaluate_distance_normalized(board, player, rows, cols, score_cols, constants)
-    
-    # Decision based on material advantage (in terms of stones, not arbitrary numbers)
-    stone_diff = material["my_stones"] - material["opp_stones"]
-    
-    # Big advantage: >= 50% of winning condition (2+ stones)
-    if stone_diff >= constants.STRATEGIC_ADVANTAGE_BIG:
-        return "PROTECT_LEAD"
-    
-    # Big disadvantage: <= -50% of winning condition
-    elif stone_diff <= -constants.STRATEGIC_ADVANTAGE_BIG:
-        return "DEFENSIVE"
-    
-    # Small advantage: use combined material + distance to decide
-    elif stone_diff >= constants.STRATEGIC_ADVANTAGE_SMALL:
-        # We're ahead - check distance advantage too
-        combined_advantage = material["advantage"] + distance["advantage"]
-        if combined_advantage > 0.3:  # Strong overall position
-            return "AGGRESSIVE"
+    while to_explore:
+        x, y = to_explore.popleft()
+        
+        if (x, y) in explored:
+            continue
+        if not in_bounds(x, y, rows, cols):
+            continue
+        
+        explored.add((x, y))
+        
+        token = board[y][x]
+        
+        # Empty cell - this is reachable
+        if token is None:
+            # Can't enter opponent's scoring area
+            if not is_opponent_score_cell(x, y, player, rows, cols, score_cols):
+                reachable.append((y, x))
+            continue
+        
+        # Not a river - can't continue
+        if token.side != "river":
+            continue
+        
+        # Determine river flow direction
+        if hasattr(token, 'orientation'):
+            orientation = token.orientation
         else:
-            return "BALANCED"
-    
-    # Small disadvantage
-    elif stone_diff <= -constants.STRATEGIC_ADVANTAGE_SMALL:
-        return "DEFENSIVE"
-    
-    # Material tied - use distance to decide
-    else:
-        if distance["advantage"] > 0.2:  # We're closer to goal
-            return "AGGRESSIVE"
-        elif distance["advantage"] < -0.2:  # Opponent is closer
-            return "DEFENSIVE"
+            orientation = "horizontal"
+        
+        if orientation == "horizontal":
+            flow_directions = [(1, 0), (-1, 0)]  # left, right
         else:
-            return "BALANCED"
+            flow_directions = [(0, 1), (0, -1)]  # up, down
+        
+        # Follow river in both directions
+        for dx, dy in flow_directions:
+            nx, ny = x + dx, y + dy
+            
+            # Traverse along the river direction until we hit something
+            while in_bounds(nx, ny, rows, cols):
+                # Can't enter opponent's scoring area
+                if is_opponent_score_cell(nx, ny, player, rows, cols, score_cols):
+                    break
+                
+                next_token = board[ny][nx]
+                
+                if next_token is None:
+                    # Empty cell - reachable
+                    reachable.append((ny, nx))
+                    nx += dx
+                    ny += dy
+                elif nx == start_x and ny == start_y:
+                    # Our starting position - skip it
+                    nx += dx
+                    ny += dy
+                elif next_token.side == "river":
+                    to_explore.append((nx, ny))
+                    nx += dx  # Fix: Continue flowing
+                    ny += dy  # Fix: Continue flowing
+                else:
+                    # Stone blocking - stop
+                    break
+    
+    return reachable
 
 
 # ==================== COMPREHENSIVE MOVE ANALYSIS ====================
 # Single-pass analysis that generates moves and evaluates them together
 
 def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, cols: int,
-                                 score_cols: List[int]) -> Dict[str, Any]:
+                                 score_cols: List[int], turn_count: int = 0) -> Dict[str, Any]:
     """
-    COMPREHENSIVE ANALYSIS: Scan board ONCE, generate all moves with evaluations.
+    COMPREHENSIVE ANALYSIS: Scan board ONCE, generate all moves with INLINE PRIORITIES.
     
-    This replaces duplicate work in evaluation + move generation.
+    Priorities calculated DIRECTLY where moves are generated for maximum performance!
     
     Returns:
         {
-            "winning_moves": List[Dict] - Moves that win the game,
-            "scoring_moves": List[Dict] - Moves that score stones,
-            "advancing_moves": List[Dict] - Moves toward goal,
-            "push_moves": List[Dict] - Offensive pushes,
-            "defensive_moves": List[Dict] - Counter opponent threats,
-            "setup_moves": List[Dict] - Flips and rotates,
+            "winning_moves": List[Dict] - Moves with priorities,
+            "scoring_moves": List[Dict] - Moves with priorities,
+            "advancing_moves": List[Dict] - Moves with priorities,
+            "push_moves": List[Dict] - Moves with priorities,
+            "defensive_moves": List[Dict] - Moves with priorities,
+            "setup_moves": List[Dict] - Moves with priorities,
             "opponent_threats": Dict - Opponent's dangerous positions,
             "material_eval": Dict - Material evaluation,
             "distance_eval": Dict - Distance evaluation,
@@ -1391,6 +1410,47 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
     constants = GameConstants(rows, cols)
     opponent = get_opponent(player)
     directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+    
+    # ===== COMPUTE GAME PHASE ONCE =====
+    if turn_count < 40:
+        phase = "early"
+    elif turn_count < 100:
+        phase = "mid"
+    else:
+        phase = "late"
+    
+    # ===== BASE PRIORITIES =====
+    BASE_PRIORITIES = {
+        "winning": 1000000,
+        "scoring": 100000,
+        "advancing": 10000,
+        "push": 5000,
+        "defensive": 8000,
+        "escape": 6000,
+        "flip": 2000,
+        "rotate": 1000
+    }
+    
+    # ===== PHASE MULTIPLIERS (computed once) =====
+    PHASE_MULTS = {
+        "early": {
+            "winning": 1.0, "scoring": 0.5, "advancing": 0.2,  # FIX #3: BOOST advancing
+            "push": 0.8, "defensive": 2.0, "escape": 1.0,  # FIX #2: BOOST defensive
+            "flip": 1.0, "rotate": 0.2  # FIX #3: NERF flips in early game!
+        },
+        "mid": {
+            "winning": 1.0, "scoring": 1.2, "advancing": 1.5,
+            "push": 1.3, "defensive": 1.2, "escape": 1.1,
+            "flip": 0.8, "rotate": 0.7
+        },
+        "late": {
+            "winning": 1.0, "scoring": 2.0, "advancing": 1.2,
+            "push": 1.0, "defensive": 1.5, "escape": 1.3,
+            "flip": 0.3, "rotate": 0.2
+        }
+    }
+    
+    phase_mult = PHASE_MULTS[phase]
     
     # Initialize move collections
     winning_moves = []
@@ -1439,78 +1499,212 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                             # Is it scoring?
                             if ny == my_goal_row and nx in score_cols:
                                 if my_stones_in_goal == 3:
+                                    move["move_type"] = "winning"
+                                    move["priority"] = BASE_PRIORITIES["winning"]
                                     winning_moves.append(move)
                                 else:
+                                    # FIX: Simple priority, no weird scaling
+                                    base_priority = BASE_PRIORITIES["scoring"] * phase_mult["scoring"]
+
+                                    # Optional: Boost if close to winning
+                                    if my_stones_in_goal >= 2:
+                                        base_priority *= 1.5  # Almost winning, prioritize!
+
+                                    move["move_type"] = "scoring"
+                                    move["priority"] = base_priority
                                     scoring_moves.append(move)
+
                             # Is it advancing?
-                            elif (player == "circle" and ny < y) or (player == "square" and ny > y):
-                                advancing_moves.append(move)
-                        
+                            else:
+                                current_dist = abs(y - my_goal_row) + min(abs(x - sc) for sc in score_cols)
+                                new_dist = abs(ny - my_goal_row) + min(abs(nx - sc) for sc in score_cols)
+                                distance_improved = current_dist - new_dist
+
+                                if distance_improved > 0:
+                                    quality = float(distance_improved)
+
+                                    move["move_type"] = "advancing"
+                                    move["distance_advanced"] = distance_improved
+                                    move["via_river"] = False
+                                    move["in_scoring_col"] = nx in score_cols
+                                    move["priority"] = BASE_PRIORITIES["advancing"] * phase_mult["advancing"] * quality
+                                    advancing_moves.append(move)
+
                         # River Traversing using opponent's river or my river
                         elif target.side == "river":
                             # Traverse river network
                             reachable_cells = traverse_river(board, nx, ny, x, y, player, rows, cols, score_cols)
-                            
+
+                            # Keep the best advancing move only
+                            best_advance = None
+                            best_improvement = float('-inf')
+                            best_details = None
+
+                            current_dist = abs(y - my_goal_row) + min(abs(x - sc) for sc in score_cols)
+
                             for dest_y, dest_x in reachable_cells:
                                 move = {"action": "move", "from": [x, y], "to": [dest_x, dest_y]}
-                                
-                                # Categorize river moves
+                                new_dist = abs(dest_y - my_goal_row) + min(abs(dest_x - sc) for sc in score_cols)
+                                distance_improved = current_dist - new_dist  # Positive = progress
+                                in_scoring_col = dest_x in score_cols
+
+                                # Winning move
                                 if dest_y == my_goal_row and dest_x in score_cols:
                                     if my_stones_in_goal == 3:
+                                        move["move_type"] = "winning"
+                                        move["priority"] = BASE_PRIORITIES["winning"]
                                         winning_moves.append(move)
                                     else:
+                                        move["move_type"] = "scoring"
+                                        move["priority"] = BASE_PRIORITIES["scoring"] * phase_mult["scoring"]
                                         scoring_moves.append(move)
-                                elif (player == "circle" and dest_y < y) or (player == "square" and dest_y > y):
-                                    advancing_moves.append(move)
-                        # Push moves
-                        elif target.owner == opponent:
-                            px, py = nx + dx, ny + dy
-                            if (in_bounds(px, py, rows, cols) and 
-                                board[py][px] is None and
-                                not is_opponent_score_cell(px, py, opponent, rows, cols, score_cols)):
-                                push_moves.append({
-                                    "action": "push",
-                                    "from": [x, y],
-                                    "to": [nx, ny],
-                                    "pushed_to": [px, py]
-                                })
-                    
+                                # Advancing move: track only the best one
+                                elif distance_improved > 0:
+                                    # Compare only to best so far
+                                    if distance_improved > best_improvement:
+                                        best_improvement = distance_improved
+                                        best_advance = (dest_y, dest_x)
+                                        best_details = {
+                                            "move": move.copy(),
+                                            "distance_advanced": 1,  # River = 1 move step
+                                            "via_river": True,
+                                            "in_scoring_col": in_scoring_col,
+                                            "priority": BASE_PRIORITIES["advancing"] * phase_mult["advancing"] * float(distance_improved)
+                                        }
+
+                            # After for-loop, append the best advancing river move (if any)
+                            if best_details:
+                                best_details["move"]["move_type"] = "advancing"
+                                best_details["move"]["distance_advanced"] = 1
+                                best_details["move"]["via_river"] = True
+                                best_details["move"]["in_scoring_col"] = best_details["in_scoring_col"]
+                                best_details["move"]["priority"] = best_details["priority"]
+                                advancing_moves.append(best_details["move"])
+
+                            # Pushing my stone
+                            elif target.side == "stone" and target.owner == player:
+                                # Self-pushing: Reposition own pieces strategically
+                                px, py = nx + dx, ny + dy  # Where pushed stone ends up
+
+                                if (in_bounds(px, py, rows, cols) and 
+                                    board[py][px] is None and
+                                    not is_opponent_score_cell(px, py, player, rows, cols, score_cols)) :
+
+                                    # If our pushed goes out of scoring area, skip
+                                    if ny == my_goal_row and nx in score_cols:
+                                        continue
+
+                                    # Calculate improvement for PUSHED stone
+                                    pushed_stone_current_dist = abs(ny - my_goal_row) + min(abs(nx - sc) for sc in score_cols)
+                                    pushed_stone_new_dist = abs(py - my_goal_row) + min(abs(px - sc) for sc in score_cols)
+                                    pushed_stone_improvement = pushed_stone_current_dist - pushed_stone_new_dist
+
+                                    # Calculate improvement for PUSHER stone
+                                    pusher_current_dist = abs(y - my_goal_row) + min(abs(x - sc) for sc in score_cols)
+                                    pusher_new_dist = abs(ny - my_goal_row) + min(abs(nx - sc) for sc in score_cols)
+                                    pusher_improvement = pusher_current_dist - pusher_new_dist
+
+                                    
+
+                            # Push moves by stones/rivers are going to generate inside defensive moves
+                            elif target.owner == opponent:
+                                pass  # Handled in defensive moves
+
+                            
                     # SMART SETUP: Only flip stones that are strategically positioned
-                    # 1. Stones near goal (can create river highway)
-                    # 2. Stones that could connect to existing rivers
-                    # 3. Stones in the middle of the board (flexible positioning)
+                    # NEW APPROACH: Calculate orientation based on distance, check opponent benefit
                     
-                    dist_to_goal = abs(y - my_goal_row)
-                    is_near_goal = dist_to_goal <= 3
+                    dist_to_goal_y = abs(y - my_goal_row)
+                    dist_to_goal_x = min(abs(x - sc) for sc in score_cols)
                     is_in_scoring_col = x in score_cols
-                    is_central = rows // 3 <= y <= 2 * rows // 3
+                    is_near_goal = dist_to_goal_y <= 3
                     
-                    # Check if adjacent to my rivers (could extend network)
-                    adjacent_to_river = False
+                    # Check if adjacent to MY OWN rivers/stones (to extend network EARLY)
+                    # IMPORTANT: Only flip if it IMPROVES our network connectivity
+                    adjacent_to_my_piece = False
+                    piece_type_nearby = None  # Track what type of piece is adjacent
+                    
                     for dx, dy in directions:
                         adj_x, adj_y = x + dx, y + dy
                         if in_bounds(adj_x, adj_y, rows, cols):
                             adj_piece = board[adj_y][adj_x]
-                            if adj_piece and adj_piece.side == "river":
-                                adjacent_to_river = True
+                            # Adjacent to my river or stone: can improve network
+                            if adj_piece and adj_piece.owner == player:
+                                adjacent_to_my_piece = True
+                                piece_type_nearby = adj_piece.side
                                 break
                     
-                    # Generate strategic flips
-                    if is_near_goal or adjacent_to_river or is_central:
-                        for orientation in ["horizontal", "vertical"]:
-                            move = {
-                                "action": "flip",
-                                "from": [x, y],
-                                "orientation": orientation
-                            }
-                            # Tag strategic value
-                            if is_near_goal and is_in_scoring_col:
-                                move["strategic_value"] = "goal_highway"
-                            elif adjacent_to_river:
-                                move["strategic_value"] = "extend_network"
-                            else:
-                                move["strategic_value"] = "positioning"
-                            setup_moves.append(move)
+                    # Only flip if there's strategic reason AND it improves OUR network
+                    # Rule: Don't flip if it would primarily benefit opponent
+                    should_flip = (is_near_goal or adjacent_to_my_piece)
+                    
+                    if should_flip:
+                        # FIX #7: Determine BEST orientation based on distances
+                        # If we're farther in Y direction, vertical helps more
+                        # If we're farther in X direction, horizontal helps more
+                        if dist_to_goal_y >= dist_to_goal_x:
+                            best_orientation = "vertical"
+                        else:
+                            best_orientation = "horizontal"
+                        
+                        # Calculate quality: how much closer does this river help us get?
+                        # For vertical: how many cells in Y direction we gain access to
+                        # For horizontal: how many cells in X direction we gain access to
+                        if best_orientation == "vertical":
+                            # Vertical helps with Y distance (movement toward goal row)
+                            quality_metric = float(dist_to_goal_y)
+                        else:
+                            # Horizontal helps with X distance (movement toward scoring cols)
+                            quality_metric = float(dist_to_goal_x)
+                        
+                        # FIX #8: Check if opponent gains MORE benefit from this river
+                        # Calculate opponent's potential distance improvement from same river
+                        opp_dist_y = abs(y - opp_goal_row)
+                        opp_dist_x = min(abs(x - sc) for sc in score_cols)
+                        
+                        if best_orientation == "vertical":
+                            opp_quality = float(opp_dist_y)
+                        else:
+                            opp_quality = float(opp_dist_x)
+                        
+                        # If opponent benefits significantly more, penalize this flip
+                        opponent_advantage_ratio = opp_quality / max(1.0, quality_metric)
+                        if opponent_advantage_ratio > 2.0:
+                            # Opponent gains 2x+ benefit - decrease priority
+                            quality_metric *= 0.3  # Heavy penalty
+                        elif opponent_advantage_ratio > 1.5:
+                            # Opponent gains 50%+ benefit - moderate penalty
+                            quality_metric *= 0.6
+                        
+                        # Determine strategic reason and base quality
+                        if is_near_goal and is_in_scoring_col:
+                            strategic_value = "goal_highway"
+                            base_quality = 2.0
+                        elif adjacent_to_my_piece:
+                            strategic_value = "extend_network"
+                            base_quality = 1.2
+                        elif is_near_goal:
+                            strategic_value = "near_goal"
+                            base_quality = 1.0
+                        else:
+                            strategic_value = "positioning"
+                            base_quality = 0.5
+                        
+                        # Combine strategic base with distance-based quality
+                        # quality_metric already has opponent penalty applied
+                        final_quality = base_quality * (quality_metric / max(1.0, quality_metric))
+                        
+                        move = {
+                            "action": "flip",
+                            "from": [x, y],
+                            "orientation": best_orientation,  # ONLY generate best orientation
+                            "move_type": "flip",
+                            "strategic_value": strategic_value,
+                            "quality_metric": quality_metric,
+                            "opponent_advantage_ratio": opponent_advantage_ratio,
+                            "priority": BASE_PRIORITIES["flip"] * phase_mult["flip"] * final_quality
+                        }
+                        setup_moves.append(move)
                 
                 elif piece.side == "river":
                     # SMART ROTATE: Only rotate if it could improve connectivity or blocking
@@ -1538,24 +1732,33 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                     
                     # Rotate if it improves alignment
                     if current_ori == "horizontal" and v_connections > h_connections:
-                        setup_moves.append({
+                        move = {
                             "action": "rotate",
                             "from": [x, y],
-                            "strategic_value": "align_network"
-                        })
+                            "strategic_value": "align_network",
+                            "move_type": "rotate",
+                            "priority": BASE_PRIORITIES["rotate"] * phase_mult["rotate"] * 1.5
+                        }
+                        setup_moves.append(move)
                     elif current_ori == "vertical" and h_connections > v_connections:
-                        setup_moves.append({
+                        move = {
                             "action": "rotate",
                             "from": [x, y],
-                            "strategic_value": "align_network"
-                        })
+                            "strategic_value": "align_network",
+                            "move_type": "rotate",
+                            "priority": BASE_PRIORITIES["rotate"] * phase_mult["rotate"] * 1.5
+                        }
+                        setup_moves.append(move)
                     
                     # Always allow flip back to stone (might need mobility)
-                    setup_moves.append({
+                    move = {
                         "action": "flip",
                         "from": [x, y],
-                        "strategic_value": "revert_to_stone"
-                    })
+                        "strategic_value": "revert_to_stone",
+                        "move_type": "flip",
+                        "priority": BASE_PRIORITIES["flip"] * phase_mult["flip"] * 0.5
+                    }
+                    setup_moves.append(move)
             
             # === ANALYZE OPPONENT PIECES ===
             else:  # opponent's piece
@@ -1588,6 +1791,48 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                     })
     
     # === GENERATE DEFENSIVE MOVES BASED ON THREATS ===
+    
+    # FIX #2: CRITICAL - Detect stones already in our scoring area that opponent can remove
+    my_scored_stones = []
+    for x_s in score_cols:
+        piece = board[my_goal_row][x_s]
+        if piece and piece.owner == player and piece.side == "stone":
+            my_scored_stones.append((x_s, my_goal_row))
+    
+    # Check if opponent can remove any of our scored stones (push or flip)
+    scored_stone_under_threat = False
+    for sx, sy in my_scored_stones:
+        for dx, dy in directions:
+            # Check if opponent can push this stone
+            pusher_x, pusher_y = sx - dx, sy - dy
+            if in_bounds(pusher_x, pusher_y, rows, cols):
+                pusher = board[pusher_y][pusher_x]
+                if pusher and pusher.owner == opponent and pusher.side == "stone":
+                    scored_stone_under_threat = True
+                    # Generate defensive move: protect this stone by pushing the pusher away
+                    for pdx, pdy in directions:
+                        my_defender_x, my_defender_y = pusher_x - pdx, pusher_y - pdy
+                        if in_bounds(my_defender_x, my_defender_y, rows, cols):
+                            defender = board[my_defender_y][my_defender_x]
+                            if defender and defender.owner == player and defender.side == "stone":
+                                push_dest_x = pusher_x + pdx
+                                push_dest_y = pusher_y + pdy
+                                if (in_bounds(push_dest_x, push_dest_y, rows, cols) and
+                                    board[push_dest_y][push_dest_x] is None and
+                                    push_dest_y != my_goal_row):  # Don't push into our goal area
+                                    
+                                    move = {
+                                        "action": "push",
+                                        "from": [my_defender_x, my_defender_y],
+                                        "to": [pusher_x, pusher_y],
+                                        "pushed_to": [push_dest_x, push_dest_y],
+                                        "reason": "protect_scored_stone",
+                                        "move_type": "defensive",
+                                        "threat_severity": "catastrophic",
+                                        "priority": BASE_PRIORITIES["defensive"] * phase_mult["defensive"] * 10.0  # HIGHEST!
+                                    }
+                                    defensive_moves.append(move)
+    
     # Counter opponent's threatening stones
     for threat in opponent_threatening_stones:
         tx, ty = threat["pos"]
@@ -1601,13 +1846,21 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                     pushed_to_x, pushed_to_y = tx + dx, ty + dy
                     if (in_bounds(pushed_to_x, pushed_to_y, rows, cols) and
                         board[pushed_to_y][pushed_to_x] is None):
-                        defensive_moves.append({
+                        # Determine threat severity and quality INLINE
+                        threat_severity = "critical" if threat["distance"] <= 2 else "major"
+                        quality = 5.0 if threat_severity == "critical" else 2.0
+                        
+                        move = {
                             "action": "push",
                             "from": [px, py],
                             "to": [tx, ty],
                             "pushed_to": [pushed_to_x, pushed_to_y],
-                            "reason": "counter_threat"
-                        })
+                            "reason": "counter_threat",
+                            "move_type": "defensive",
+                            "threat_severity": threat_severity,
+                            "priority": BASE_PRIORITIES["defensive"] * phase_mult["defensive"] * quality
+                        }
+                        defensive_moves.append(move)
     
     # Block opponent rivers with our pieces
     for opp_river in opponent_rivers:
@@ -1622,12 +1875,15 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
                 if blocker and blocker.owner == player and blocker.side == "stone":
                     # Flip to perpendicular river to block
                     block_ori = "vertical" if opp_ori == "horizontal" else "horizontal"
-                    defensive_moves.append({
+                    move = {
                         "action": "flip",
                         "from": [bx, by],
                         "orientation": block_ori,
-                        "reason": "block_river"
-                    })
+                        "reason": "block_river",
+                        "move_type": "defensive",
+                        "priority": BASE_PRIORITIES["defensive"] * phase_mult["defensive"] * 1.5
+                    }
+                    defensive_moves.append(move)
     
     # Move vulnerable pieces away from push threats
     for threat in opponent_push_threats:
@@ -1637,12 +1893,20 @@ def analyze_position_with_moves(board: List[List[Any]], player: str, rows: int, 
             ex, ey = vx + dx, vy + dy
             if in_bounds(ex, ey, rows, cols) and board[ey][ex] is None:
                 if not is_opponent_score_cell(ex, ey, player, rows, cols, score_cols):
-                    defensive_moves.append({
+                    # Determine threat severity and quality INLINE
+                    threat_sev = "critical" if threat.get("can_score", False) else "major"
+                    quality = 2.0 if threat_sev == "critical" else 1.0
+                    
+                    move = {
                         "action": "move",
                         "from": [vx, vy],
                         "to": [ex, ey],
-                        "reason": "escape_push"
-                    })
+                        "reason": "escape_push",
+                        "move_type": "escape",
+                        "threat_severity": threat_sev,
+                        "priority": BASE_PRIORITIES["escape"] * phase_mult["escape"] * quality
+                    }
+                    defensive_moves.append(move)
     
     # Compute evaluations
     material_eval = evaluate_material_normalized(board, player, rows, cols, score_cols, constants)
@@ -2080,18 +2344,8 @@ def minimax_alpha_beta(board: List[List[Any]], depth: int, alpha: float, beta: f
         transposition_table.store(board_hash, depth, eval_score, None, "EXACT")
         return eval_score, None
     
-    # Generate moves based on strategic mode (targeted generation)
-    strategic_mode = determine_strategic_mode(board, player, rows, cols, score_cols)
-    
-    if strategic_mode == "CAN_WIN":
-        moves = generate_winning_moves(board, player, rows, cols, score_cols)
-    elif strategic_mode == "DESPERATE_DEFENSE":
-        moves = generate_defensive_moves(board, player, rows, cols, score_cols)
-    elif strategic_mode == "DEFENSIVE":
-        moves = generate_defensive_moves(board, player, rows, cols, score_cols)
-    else:
-        # For other modes, generate all moves
-        moves = generate_all_moves(board, player, rows, cols, score_cols)
+    # Generate all moves - let priority system handle filtering
+    moves = generate_all_moves(board, player, rows, cols, score_cols)
     
     if not moves:
         # No moves available
@@ -2418,6 +2672,32 @@ def simulate_move(board: List[List[Any]], move: Dict[str, Any], player: str, row
     except Exception as e:
         return False, str(e)
 
+# ==================== GAME PHASE HELPER ====================
+
+def get_game_phase(turn_count: int) -> str:
+    """
+    Determine current game phase based on turn count.
+    
+    Args:
+        turn_count: Current turn number for this player
+    
+    Returns:
+        "early", "mid", or "late"
+    """
+    if turn_count < 40:
+        return "early"
+    elif turn_count < 100:
+        return "mid"
+    else:
+        return "late"
+
+
+# Move prioritization is now implemented inline inside
+# `analyze_position_with_moves()`; the previous MovePriority class
+# and its helpers were removed to avoid duplication and keep the
+# codebase focused. Phase handling is provided by `get_game_phase()`.
+
+
 # ==================== BASE AGENT CLASS ====================
 
 class BaseAgent(ABC):
@@ -2475,6 +2755,9 @@ class StudentAgent(BaseAgent):
         
         # Move history to prevent immediate repetition
         self.last_move = None
+        
+        # Turn counter (this player's turns only)
+        self.turn_count = 0
     
     def choose(self, board: List[List[Any]], rows: int, cols: int, score_cols: List[int], 
               current_player_time: float, opponent_time: float) -> Optional[Dict[str, Any]]:
@@ -2518,13 +2801,21 @@ class StudentAgent(BaseAgent):
         if self.zobrist is None:
             self.zobrist = ZobristHash(rows, cols)
         
+        # Increment turn counter
+        self.turn_count += 1
+        
         # ===== STEP 1: COMPREHENSIVE POSITION ANALYSIS =====
         # Single-pass analysis: generate all moves + evaluate position
         print(f"\n{'='*60}")
-        print(f"[TURN START] Player: {self.player}")
+        print(f"[TURN {self.turn_count}] Player: {self.player}")
         print(f"[TIME] Remaining: {current_player_time:.2f}s")
         
-        analysis = analyze_position_with_moves(board, self.player, rows, cols, score_cols)
+        # Determine game phase using standalone function
+        game_phase = get_game_phase(self.turn_count)
+        print(f"[PHASE] {game_phase.upper()} game")
+        
+        # PASS turn_count to analysis for integrated priority calculation
+        analysis = analyze_position_with_moves(board, self.player, rows, cols, score_cols, self.turn_count)
         
         print(f"[MOVES GENERATED]")
         print(f"  - Winning moves: {len(analysis['winning_moves'])}")
@@ -2548,157 +2839,66 @@ class StudentAgent(BaseAgent):
             print(f"{'='*60}\n")
             return best_win
         
-        # ===== STEP 2: DETERMINE STRATEGIC MODE =====
-        # Use analysis to determine game situation
-        strategic_mode = "BALANCED"
-        
-        if analysis['opponent_threats']['threatening_stones']:
-            if analysis['material_eval']['opp_stones'] >= 3:
-                strategic_mode = "DESPERATE_DEFENSE"
-            else:
-                strategic_mode = "DEFENSIVE"
-        elif analysis['material_eval']['my_stones'] >= 3:
-            strategic_mode = "AGGRESSIVE"
-        elif analysis['material_eval']['my_stones'] > analysis['material_eval']['opp_stones']:
-            strategic_mode = "PROTECT_LEAD"
-        elif analysis['material_eval']['my_stones'] < analysis['material_eval']['opp_stones']:
-            strategic_mode = "DEFENSIVE"
-        
-        print(f"[STRATEGY] Mode: {strategic_mode}")
-        
-        # ===== STEP 3: BUILD MOVE POOL BASED ON STRATEGY =====
-        # Select move types based on strategic situation
+        # ===== STEP 2: BUILD MOVE POOL =====
+        # Use ALL categorized moves - let priority system handle filtering
         candidate_moves = []
         move_categories = []
         
-        if strategic_mode == "DESPERATE_DEFENSE":
-            # EMERGENCY: Only defensive moves
+        # Always check for winning moves first
+        if analysis['winning_moves']:
+            print(f"[INSTANT WIN] Found {len(analysis['winning_moves'])} winning moves!")
+            self.last_move = analysis['winning_moves'][0]
+            self.turn_count += 1
+            print(f"{'='*60}\n")
+            return analysis['winning_moves'][0]
+        
+        # Include all move types
+        if analysis['scoring_moves']:
+            candidate_moves.extend(analysis['scoring_moves'])
+            move_categories.append(f"scoring({len(analysis['scoring_moves'])})")
+        
+        if analysis['advancing_moves']:
+            candidate_moves.extend(analysis['advancing_moves'])
+            move_categories.append(f"advancing({len(analysis['advancing_moves'])})")
+        
+        if analysis['push_moves']:
+            candidate_moves.extend(analysis['push_moves'])
+            move_categories.append(f"push({len(analysis['push_moves'])})")
+        
+        if analysis['defensive_moves']:
             candidate_moves.extend(analysis['defensive_moves'])
             move_categories.append(f"defensive({len(analysis['defensive_moves'])})")
-            # Also try scoring if possible (best defense is offense)
-            if analysis['scoring_moves']:
-                candidate_moves.extend(analysis['scoring_moves'])
-                move_categories.append(f"scoring({len(analysis['scoring_moves'])})")
         
-        elif strategic_mode == "DEFENSIVE":
-            # Focus on defense but include some offense
-            candidate_moves.extend(analysis['defensive_moves'])
-            move_categories.append(f"defensive({len(analysis['defensive_moves'])})")
-            if analysis['scoring_moves']:
-                candidate_moves.extend(analysis['scoring_moves'])
-                move_categories.append(f"scoring({len(analysis['scoring_moves'])})")
-            if analysis['advancing_moves']:
-                candidate_moves.extend(analysis['advancing_moves'][:5])
-                move_categories.append(f"advancing({len(analysis['advancing_moves'][:5])})")
-        
-        elif strategic_mode == "PROTECT_LEAD":
-            # Mix of defense and careful offense
-            if analysis['scoring_moves']:
-                candidate_moves.extend(analysis['scoring_moves'])
-                move_categories.append(f"scoring({len(analysis['scoring_moves'])})")
-            candidate_moves.extend(analysis['defensive_moves'][:5])
-            move_categories.append(f"defensive({len(analysis['defensive_moves'][:5])})")
-            if analysis['push_moves']:
-                candidate_moves.extend(analysis['push_moves'][:3])
-                move_categories.append(f"push({len(analysis['push_moves'][:3])})")
-        
-        elif strategic_mode == "AGGRESSIVE":
-            # Focus on offense
-            if analysis['scoring_moves']:
-                candidate_moves.extend(analysis['scoring_moves'])
-                move_categories.append(f"scoring({len(analysis['scoring_moves'])})")
-            if analysis['advancing_moves']:
-                candidate_moves.extend(analysis['advancing_moves'][:8])
-                move_categories.append(f"advancing({len(analysis['advancing_moves'][:8])})")
-            if analysis['push_moves']:
-                candidate_moves.extend(analysis['push_moves'][:5])
-                move_categories.append(f"push({len(analysis['push_moves'][:5])})")
-        
-        else:  # BALANCED
-            # Include all types for flexibility
-            if analysis['scoring_moves']:
-                candidate_moves.extend(analysis['scoring_moves'])
-                move_categories.append(f"scoring({len(analysis['scoring_moves'])})")
-            if analysis['advancing_moves']:
-                candidate_moves.extend(analysis['advancing_moves'][:5])
-                move_categories.append(f"advancing({len(analysis['advancing_moves'][:5])})")
-            if analysis['push_moves']:
-                candidate_moves.extend(analysis['push_moves'][:3])
-                move_categories.append(f"push({len(analysis['push_moves'][:3])})")
-            if analysis['defensive_moves']:
-                candidate_moves.extend(analysis['defensive_moves'][:3])
-                move_categories.append(f"defensive({len(analysis['defensive_moves'][:3])})")
-        
-        # ALWAYS include some setup moves for all strategies (rivers are important!)
         if analysis['setup_moves']:
-            candidate_moves.extend(analysis['setup_moves'][:8])
-            move_categories.append(f"setup({len(analysis['setup_moves'][:8])})")
+            candidate_moves.extend(analysis['setup_moves'])
+            move_categories.append(f"setup({len(analysis['setup_moves'])})")
+    
         
         print(f"[MOVE POOL] {', '.join(move_categories)}")
         
-        # ===== STEP 4: FALLBACK IF NO MOVES =====
-        if not candidate_moves:
-            print(f"[WARNING] No strategic moves! Fallback to all possible moves")
-            candidate_moves = generate_all_moves(board, self.player, rows, cols, score_cols)
         
-        if not candidate_moves:
-            print(f"[ERROR] No legal moves available!")
-            print(f"{'='*60}\n")
-            return None
+        # ===== STEP 4: SORT BY PRIORITIES =====
+        # Priorities already calculated in analyze_position_with_moves!
+        print(f"[PRIORITY] Sorting {len(candidate_moves)} moves...")
+
+        # Sort by priority ( first)
+        candidate_moves.sort(key=lambda m: m['priority'], reverse=True)
         
-        # ===== STEP 4.5: FILTER OUT IMMEDIATE REPETITIONS =====
-        # Prevent flipping the same piece back and forth
-        if self.last_move and self.last_move.get('action') == 'flip':
-            last_pos = self.last_move.get('from')
-            filtered_moves = []
-            for move in candidate_moves:
-                # Skip if it's a flip at the same position we just flipped
-                if move.get('action') == 'flip' and move.get('from') == last_pos:
-                    continue
-                filtered_moves.append(move)
-            
-            if filtered_moves:  # Use filtered if we have alternatives
-                print(f"[ANTI-REPEAT] Filtered out flip at {last_pos} (would undo last move)")
-                candidate_moves = filtered_moves
+        # ===== STEP 5: EVALUATE TOP MOVES BY SIMULATION =====
+        # Adaptive evaluation limit based on time
+        # if current_player_time > 30:
+        #     max_to_evaluate = 30
+        # elif current_player_time > 10:
+        #     max_to_evaluate = 20
+        # else:
+        #     max_to_evaluate = 10
+        moves_to_evaluate = candidate_moves
         
-        # ===== STEP 5: SELECT BEST MOVE BY SCORING =====
-        # Evaluate each candidate by simulating and scoring resulting position
-        best_move = None
-        best_score = float('-inf')
+        best_move = candidate_moves[0]
+        best_combined_score = best_move['priority']
         
-        print(f"[EVALUATION] Scoring {len(candidate_moves)} moves...")
-        for i, move in enumerate(candidate_moves):  # Top 15 to balance speed/quality
-            try:
-                # Simulate move
-                success, result = simulate_move(board, move, self.player, rows, cols, score_cols)
-                if success:
-                    new_board = result
-                    # Evaluate resulting position
-                    score = evaluate_position(new_board, self.player, rows, cols, score_cols)
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_move = move
-                    
-                    # Show detailed scoring for first few moves
-                    if i < 5:
-                        move_summary = f"{move.get('action')}"
-                        if move.get('from'):
-                            move_summary += f" from {move['from']}"
-                        if move.get('to'):
-                            move_summary += f" to {move['to']}"
-                        print(f"  [{i+1}] {move_summary} -> Score: {score:.2f}")
-            except Exception as e:
-                print(f"  [ERROR] Move {move} failed: {e}")
-                continue
-        
-        if best_move:
-            print(f"[DECISION] BEST MOVE: {best_move}")
-            print(f"[SCORE] {best_score:.2f}")
-        else:
-            # Just pick first valid move
-            best_move = candidate_moves[0]
-            print(f"[DECISION] FALLBACK to first move: {best_move}")
+        print(f"[DECISION] BEST MOVE: {best_move}")
+        print(f"[COMBINED SCORE] {best_combined_score:.0f} (Priority: {best_move.get('priority', 0):.0f})")
         
         # Record this move to prevent immediate repetition
         self.last_move = best_move
